@@ -13,8 +13,8 @@
     <groupId>cn.yang</groupId>
     <artifactId>cn.learning</artifactId>
     <version>1.0-SNAPSHOT</version>
-    <name>cn.yang.cn.learning</name>
-    <description>cn.yang.cn.learning</description>
+    <name>cn.yang.learning</name>
+    <description>cn.yang.learning</description>
 
     <properties>
         <java.version>1.8</java.version>
