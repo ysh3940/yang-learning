@@ -13,7 +13,7 @@ public class HealthController {
     @GetMapping("/ok")
     @ResponseBody
     public BaseResponse ok() {
-        return BaseResponse.success("0", "ok");
+        return BaseResponse.success("ok");
     }
 
 }
