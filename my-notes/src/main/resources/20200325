@@ -1,0 +1,11 @@
+
+
+--- 1、mysql内部log实现原理
+mysql日志系统之redo log和bin log：https://www.jianshu.com/p/4bcfffb27ed5
+MySQL中Redo与Binlog顺序一致性问题？：https://blog.csdn.net/staforn/article/details/80423137
+
+--- 2、怎么快速定位死锁：https://juejin.im/post/5aaf6ee76fb9a028d3753534
+
+--- 3、mysql分库分表：https://tech.meituan.com/2016/11/18/dianping-order-db-sharding.html
+
+

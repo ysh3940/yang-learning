@@ -1,0 +1,102 @@
+
+
+--- 1、redis的hash槽，由于key的hash值都可能落到同一个redis节点，这个怎么解决（可以对key先计算一遍hash值）
+https://segmentfault.com/a/1190000012201011（谈谈java中几种常见的散列算法及解决哈希碰撞的方式）
+冲突处理：再哈希，再哈希法，就是出现冲突后采用其他的哈希函数计算，直到不再冲突为止。
+
+
+关于Redis热点key的一些思考：https://juejin.im/post/6844903886667382798
+如何解决？
+针对于热点Key的解决方案网上的查找出来无非就是两种
+
+服务端缓存：即将热点数据缓存至服务端的内存中
+备份热点Key：即将热点Key+随机数，随机分配至Redis其他节点中。这样访问热点key的时候就不会全部命中到一台机器上了。
+
+
+
+
+--- 2、thread local源码（key保存的是thread local对象本身）
+
+
+--- 3、一次http，一次dubbo，调用过程是咋样的
+dubbo调用流程：
+服务接口层（Service）：与实际业务逻辑相关的，根据服务提供方和服务消费方的业务设计对应的接口和实现。
+配置层（Config）：对外配置接口，以ServiceConfig和ReferenceConfig为中心，可以直接new配置类，也可以通过Spring解析配置生成配置类。
+服务代理层（Proxy）：服务接口透明代理，生成服务的客户端Stub和服务器端Skeleton，以ServiceProxy为中心，扩展接口为ProxyFactory。
+服务注册层（Registry）：封装服务地址的注册与发现，以服务URL为中心，扩展接口为RegistryFactory、Registry和RegistryService。可能没有服务注册中心，此时服务提供方直接暴露服务。
+集群层（Cluster）：封装多个提供者的路由及负载均衡，并桥接注册中心，以Invoker为中心，扩展接口为Cluster、Directory、Router和LoadBalance。将多个服务提供方组合为一个服务提供方，实现对服务消费方来透明，只需要与一个服务提供方进行交互。
+监控层（Monitor）：RPC调用次数和调用时间监控，以Statistics为中心，扩展接口为MonitorFactory、Monitor和MonitorService。
+远程调用层（Protocol）：封将RPC调用，以Invocation和Result为中心，扩展接口为Protocol、Invoker和Exporter。Protocol是服务域，它是Invoker暴露和引用的主功能入口，它负责Invoker的生命周期管理。Invoker是实体域，它是Dubbo的核心模型，其它模型都向它靠扰，或转换成它，它代表一个可执行体，可向它发起invoke调用，它有可能是一个本地的实现，也可能是一个远程的实现，也可能一个集群实现。
+信息交换层（Exchange）：封装请求响应模式，同步转异步，以Request和Response为中心，扩展接口为Exchanger、ExchangeChannel、ExchangeClient和ExchangeServer。
+网络传输层（Transport）：抽象mina和netty为统一接口，以Message为中心，扩展接口为Channel、Transporter、Client、Server和Codec。
+数据序列化层（Serialize）：可复用的一些工具，扩展接口为Serialization、 ObjectInput、ObjectOutput和ThreadPool。
+
+
+http调用流程：https://www.jianshu.com/p/fbe0e9fa45a6
+当我们在浏览器的地址栏输入 www.linux178.com ，然后回车，回车这一瞬间到看到页面到底发生了什么呢？
+整个流程如下：
+
+域名解析 -->
+发起TCP的3次握手 -->
+建立TCP连接后发起http请求 -->
+服务器响应http请求，浏览器得到html代码 -->
+浏览器解析html代码，并请求html代码中的资源（如js、css、图片等） -->
+浏览器对页面进行渲染呈现给用户
+
+
+
+--- 4、redis在扩容过程中，节点是否可以正常使用：https://www.cnblogs.com/wxd0108/p/5729754.html
+https://juejin.im/post/5cf7c811f265da1b7a4b6368
+
+槽迁移的过程
+
+槽迁移的过程中有一个不稳定状态，这个不稳定状态会有一些规则，这些规则定义客户端的行为，从而使得Redis Cluster不必宕机的情况下可以执行槽的迁移。下面这张图描述了我们迁移编号为1、2、3的槽的过程中，他们在MasterA节点和Master节点中的状态。
+
+1、MIGRATING状态
+
+本例中MIGRATING状态是发生在MasterA节点中的一种槽的状态，预备迁移槽的时候槽的状态首先会变为MIGRATING状态，这种状态的槽会实际产生什么影响呢?当客户端请求的某个Key所属的槽处于MIGRATING状态的时候，影响有下面几条：
+
+如果Key存在则成功处理
+
+如果Key不存在，则返回客户端ASK，仅当这次请求会转向另一个节点，并不会刷新客户端中node的映射关系，也就是说下次该客户端请求该Key的时候，还会选择MasterA节点
+
+如果Key包含多个命令，如果都存在则成功处理，如果都不存在，则返回客户端ASK，如果一部分存在，则返回客户端TRYAGAIN，通知客户端稍后重试，这样当所有的Key都迁移完毕的时候客户端重试请求的时候回得到ASK，然后经过一次重定向就可以获取这批键
+
+2、IMPORTING状态
+
+本例中的IMPORTING状态是发生在MasterB节点中的一种槽的状态，预备将槽从MasterA节点迁移到MasterB节点的时候，槽的状态会首先变为IMPORTING。IMPORTING状态的槽对客户端的行为有下面一些影响：
+
+正常命令会被MOVED重定向，如果是ASKING命令则命令会被执行，从而Key没有在老的节点已经被迁移到新的节点的情况可以被顺利处理；
+
+如果Key不存在则新建；
+
+没有ASKING的请求和正常请求一样被MOVED，这保证客户端node映射关系出错的情况下不会发生写错；
+
+
+
+--- 5、mysql的B+树的深度默认是多少
+可能上面例子中只有22条数据记录，看不出 B+Tree 的优点，下面做一个推算：
+
+InnoDB存储引擎中页的大小为16KB，一般表的主键类型为INT（占用4个字节）或 BIGINT（占用8个字节），指针类型也一般为4或8个字节，也就是说一个页（B+Tree中的一个节点）中大概存储 16KB/(8B+8B)=1K 个键值（因为是估值，为方便计算，这里的K取值为〖10〗^3） 。也就是说一个深度为3的 B+Tree 索引可以维护 10^3 * 10^3 * 10^3 = 10亿 条记录。
+
+实际情况中每个节点可能不能填充满，因此在数据库中，B+Tree的高度一般都在2~4层 。MySQL的InnoDB存储引擎在设计时是将 根节点 常驻内存的，也就是说查找某一键值的 行记录 时，最多只需要1~3次磁盘I/O操作。
+
+
+
+--- 6、mysql可以进行表迁移嘛？可以库迁移嘛？
+表迁移=数据迁移，数据库迁移只要改下映射文件
+
+--- 7、线上环境什么场景会频繁发生full gc
+https://blog.wangqi.love/articles/Java/JVM%E8%B0%83%E4%BC%98%E5%AE%9E%E8%B7%B5.html
+有可能是内存分配确实过小，而正常业务使用了大量内存
+某一个对象被频繁申请，却没有释放，内存不断泄漏，导致内存耗尽
+某一个资源被频繁申请，系统资源耗尽，例如：不断创建线程，不断发起网络连接
+
+--- 8、零拷贝是啥：http://cxy7.com/articles/2018/06/13/1528903352705.html
+
+
+--- 9、redis的Gossip协议讲讲：https://juejin.im/post/5dd65d676fb9a05a9a22ac6f
+Gossip协议的使用Redis 集群是去中心化的，彼此之间状态同步靠 gossip 协议通信，集群的消息有以下几种类型：Meet 通过「cluster meet ip port」命令，已有集群的节点会向新的节点发送邀请，加入现有集群。Ping 节点每秒会向集群中其他节点发送 ping 消息，消息中带有自己已知的两个节点的地址、槽、状态信息、最后一次通信时间等。Pong 节点收到 ping 消息后会回复 pong 消息，消息中同样带有自己已知的两个节点信息。Fail 节点 ping 不通某节点后，会向集群所有节点广播该节点挂掉的消息。其他节点收到消息后标记已下线。由于去中心化和通信机制，Redis Cluster 选择了最终一致性和基本可用。例如当加入新节点时(meet)，只有邀请节点和被邀请节点知道这件事，其余节点要等待 ping 消息一层一层扩散。除了 Fail 是立即全网通知的，其他诸如新节点、节点重上线、从节点选举成为主节点、槽变化等，都需要等待被通知到，也就是Gossip协议是最终一致性的协议。由于 gossip 协议对服务器时间的要求较高，否则时间戳不准确会影响节点判断消息的有效性。另外节点数量增多后的网络开销也会对服务器产生压力，同时结点数太多，意味着达到最终一致性的时间也相对变长，因此官方推荐最大节点数为1000左右。如图展示了新加入结点服务器时的通信交互图：
+
+
+

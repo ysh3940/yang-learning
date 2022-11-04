@@ -1,0 +1,36 @@
+
+
+--- 1、java线程池详细设计，对应不同的场景：https://blog.csdn.net/u011519624/article/details/69263460
+并发编程网上的一个问题
+高并发、任务执行时间短的业务怎样使用线程池？并发不高、任务执行时间长的业务怎样使用线程池？并发高、业务执行时间长的业务怎样使用线程池？
+（1）高并发、任务执行时间短的业务，线程池线程数可以设置为CPU核数+1，减少线程上下文的切换
+（2）并发不高、任务执行时间长的业务要区分开看：
+　　a）假如是业务时间长集中在IO操作上，也就是IO密集型的任务，因为IO操作并不占用CPU，所以不要让所有的CPU闲下来，可以适当加大线程池中的线程数目，让CPU处理更多的业务
+　　b）假如是业务时间长集中在计算操作上，也就是计算密集型任务，这个就没办法了，和（1）一样吧，线程池中的线程数设置得少一些，减少线程上下文的切换
+（3）并发高、业务执行时间长，解决这种类型任务的关键不在于线程池而在于整体架构的设计，看看这些业务里面某些数据是否能做缓存是第一步，增加服务器是第二步，至于线程池的设置，设置参考（2）。最后，业务执行时间长的问题，也可能需要分析一下，看看能不能使用中间件对任务进行拆分和解耦。
+
+
+
+--- 2、mysql线程池详细了解：https://dbaplus.cn/news-11-1989-1.html
+datasource.druid.initialSize	10
+datasource.druid.maxActive	100
+datasource.druid.minIdle	10
+datasource.druid.password	np7zbf8uxjtc9rvd	1
+datasource.druid.url	jdbc:mysql://10.18.22.101:3307/ftc_saas_loanapp?serverTimezone=GMT%2B8 =
+datasource.druid.username	ftc_saas_loanapp
+    dataSource.setMaxWait(60000);
+    dataSource.setTimeBetweenEvictionRunsMillis(60000);
+    dataSource.setMinEvictableIdleTimeMillis(300000);
+    dataSource.setValidationQuery("select 1 from DUAL");
+    dataSource.setFilters("mergeStat");
+    dataSource.setName("loan.DruidDataSource");
+
+
+--- 3、Thread.sleep实现原理：https://www.zhihu.com/question/23328075
+sleep不释放锁 线程是进入阻塞状态还是就绪状态？
+答案是进入阻塞状态，确切的说Thread在Java的状态TIMED_WAITING（但这个状态其实并没那么重要，可以认为是java的内部细节，用户不用太操心）。
+wait方法释放了锁：使得其他线程可以使用同步控制块或者方法？
+wait，和notify/notifyall是一套。他们是用来做多线程之间相互同步的工具的。这里不想死抠“同步”/“互斥”的字眼。只是当你用了wait/notify/notifyall之后，就意味着你主观意图上是想让某个多个线程之间相互的“talk”，然后协商决定谁该执行那段代码。这和sleep那种自顾自的方式完全不同。
+
+
+

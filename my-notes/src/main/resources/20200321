@@ -1,0 +1,29 @@
+
+
+--- 1、spring事物的实现原理
+https://www.jianshu.com/p/ecf55d6f0118
+
+--- 2、代码中使用到的设计模式
+handler模式用到了适配器设计模式，原来的接口=ActionTask，现在新加一个ParamActionTask的run方法可以带参数的，新加一个适配器类
+@AllArgsConstructor
+class ParamActionTaskDecorator<T, P> implements ActionTask<T> {
+  private final ParamActionTask<T, P> paramActionTask;
+  private final P parameter;
+
+  @Override
+  public void run(T context) {
+    paramActionTask.runWithParam(context, parameter);
+  }
+
+  @Override
+  public String getName() {
+    return ClassNameUtil.getSimpleClassName(paramActionTask);
+  }
+}
+通过适配器类返回一个ActionTask对象
+
+
+--- 3、mysql组合索引底层原理
+MySQL索引背后的数据结构及算法原理：http://blog.codinglabs.org/articles/theory-of-mysql-index.html
+
+

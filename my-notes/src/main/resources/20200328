@@ -1,0 +1,20 @@
+
+--- 1、redis日活统计方案设计：http://doc.redisfans.com/string/incr.html
+使用redis的INCR 将 key 中储存的数字值增一。对于重复的数据用布隆过滤器拦截，初始化数据量大小、和误差率
+
+
+--- 2、redis事物可以回滚嘛：https://www.oschina.net/question/2426118_2303633
+不支持
+单个 Redis 命令的执行是原子性的，但 Redis 没有在事务上增加任何维持原子性的机制，所以 Redis 事务的执行并不是原子性的。
+事务可以理解为一个打包的批量执行脚本，但批量指令并非原子化的操作，中间某条指令的失败不会导致前面已做指令的回滚，也不会造成后续的指令不做。
+
+--- 3、短连接生成方案设计：https://www.cnblogs.com/zhanghaoh/archive/2012/12/24/2831264.html
+
+--- 4、自己实现一个lru方案（最近最少访问）
+LinkedHashMap只有它实现了lru，linkedlist没有实现
+map+双向链表，实现时间复杂度都是1，查询数据和更新链表时间复杂度=1
+
+
+
+
+
