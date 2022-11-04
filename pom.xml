@@ -23,6 +23,7 @@
     <modules>
         <module>web</module>
         <module>my-notes</module>
+        <module>grpc-proto-api</module>
     </modules>
 
     <dependencies>
