@@ -1,4 +1,4 @@
-package cn.yang.learning.web.response;
+package cn.yang.learning.core.web;
 
 import lombok.Builder;
 import lombok.Data;
