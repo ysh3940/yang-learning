@@ -2,7 +2,8 @@ package cn.yang.learning.service;
 
 import lombok.extern.slf4j.Slf4j;
 import net.devh.boot.grpc.client.inject.GrpcClient;
-import net.devh.boot.grpc.examples.lib.HelloWorldProto;
+import net.devh.boot.grpc.examples.lib.HelloReply;
+import net.devh.boot.grpc.examples.lib.HelloRequest;
 import net.devh.boot.grpc.examples.lib.MyServiceGrpc;
 import org.springframework.stereotype.Service;
 
@@ -15,7 +16,7 @@ public class GrpcClientMyService {
 
     public String sendMessage(final String name) {
         try {
-            final HelloWorldProto.HelloReply response = this.myServiceBlockingStub.sayHello(HelloWorldProto.HelloRequest.newBuilder().setName(name).build());
+            final HelloReply response = this.myServiceBlockingStub.sayHello(HelloRequest.newBuilder().setName(name).build());
             return response.getMessage();
         } catch (Exception e) {
             log.error("Request failed", e);
