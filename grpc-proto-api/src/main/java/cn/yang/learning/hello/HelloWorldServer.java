@@ -1,4 +1,4 @@
-package cn.yang.learning;
+package cn.yang.learning.hello;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
