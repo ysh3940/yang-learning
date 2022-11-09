@@ -27,6 +27,7 @@
         <module>grpc-proto-server</module>
         <module>core</module>
         <module>grpc-proto-client</module>
+        <module>micronaut</module>
     </modules>
 
     <dependencies>
