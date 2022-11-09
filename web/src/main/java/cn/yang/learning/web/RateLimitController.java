@@ -31,6 +31,9 @@ public class RateLimitController {
     @GetMapping("/rate/limit")
     @ResponseBody
     public BaseResponse rateLimit() {
+        // 可以实时修改限流策略
+        rateLimiter.setRate(20);
+
         // 100毫秒内，没拿到令牌，就直接进入服务降级
         // boolean tryAcquire = rateLimiter.tryAcquire(100, TimeUnit.MILLISECONDS);
         boolean tryAcquire = rateLimiter.tryAcquire();
