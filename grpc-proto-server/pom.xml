@@ -14,7 +14,6 @@
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
-        <springcloud.version>Hoxton.SR9</springcloud.version>
     </properties>
 
     <dependencies>
