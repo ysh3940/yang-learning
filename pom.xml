@@ -10,8 +10,8 @@
         <relativePath/>
     </parent>
 
-    <groupId>cn.yang</groupId>
-    <artifactId>cn.learning</artifactId>
+    <groupId>cn.yang.learning</groupId>
+    <artifactId>yang-learning-parent</artifactId>
     <version>1.0-SNAPSHOT</version>
     <name>cn.yang.learning</name>
     <description>cn.yang.learning</description>

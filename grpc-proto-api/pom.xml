@@ -5,7 +5,7 @@
 
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>cn.yang</groupId>
+    <groupId>cn.yang.learning</groupId>
     <artifactId>grpc-proto-api</artifactId>
     <version>1.0-SNAPSHOT</version>
 
