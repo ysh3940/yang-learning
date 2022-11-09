@@ -57,27 +57,22 @@ public class RateLimitController {
                 (r, executor) -> log.error("commonExecutorService.rejectedExecution The thread pool is full"));
 
         int count = 20;
+        CountDownLatch countDownLatch = new CountDownLatch(count);
 
         for (int i = 0; i < count; ++i) {
             executorService.execute(() -> {
                 ResponseEntity<BaseResponse> responseEntity = restTemplate.getForEntity("http://127.0.0.1:9090/rate/limit", BaseResponse.class);
                 System.out.println(responseEntity.getStatusCode().toString() + " " + responseEntity.getBody().toString());
+
+                countDownLatch.countDown();
             });
         }
 
         executorService.shutdown();
 
-        while(true){
-            if(executorService.isTerminated()){
-                System.err.println("所有的子线程都执行结束");
-                break;
-            }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+        countDownLatch.await();
+        System.err.println("所有的子线程都执行结束");
+
     }
 
 }
