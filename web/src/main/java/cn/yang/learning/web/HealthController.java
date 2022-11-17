@@ -1,19 +1,18 @@
 package cn.yang.learning.web;
 
+import cn.yang.learning.core.web.BaseRequest;
 import cn.yang.learning.core.web.BaseResponse;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 @CrossOrigin
 @RestController
 public class HealthController {
 
-    @GetMapping("/ok")
+    @RequestMapping("/ok")
     @ResponseBody
-    public BaseResponse ok() {
-        return BaseResponse.success("ok");
+    public BaseResponse ok(@RequestBody BaseRequest request, String ok) {
+        System.out.println(request.getRequestId());
+        return BaseResponse.success("ok = " + request.getRequestId() + " ok = " + ok);
     }
 
 }
