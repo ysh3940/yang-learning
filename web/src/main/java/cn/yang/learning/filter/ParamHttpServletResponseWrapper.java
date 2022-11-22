@@ -1,4 +1,4 @@
-package cn.yang.learning.interceptor;
+package cn.yang.learning.filter;
 
 import javax.servlet.ServletOutputStream;
 import javax.servlet.WriteListener;
