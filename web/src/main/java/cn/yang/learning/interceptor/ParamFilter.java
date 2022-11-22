@@ -36,7 +36,7 @@ public class ParamFilter implements Filter {
         respJson.put("responseId", UUID.randomUUID().toString());
         System.err.println(respJson.toJSONString());
 
-        response.setContentLength(respJson.toJSONString().length());
+//        response.setContentLength(respBody.length());
         response.setContentType("application/json;charset=utf-8");
         response.getOutputStream().write(respJson.toJSONString().getBytes());
 

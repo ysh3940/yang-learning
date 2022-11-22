@@ -37,19 +37,23 @@ public class ParamConvertInterceptor implements HandlerInterceptor {
             requestWrapper.setParamMap(map);
         }
 
+        String uri = request.getRequestURI();
+        if ("/ok".equals(uri)) {
+//            request.getRequestDispatcher("/ok2").forward(request, response);
+        }
 
         return true;
     }
 
     @Override
     public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) throws Exception {
-        log.error("ParamConvertInterceptor postHandle");
+//        log.error("ParamConvertInterceptor postHandle");
 
     }
 
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
-        log.error("ParamConvertInterceptor afterCompletion");
+//        log.error("ParamConvertInterceptor afterCompletion");
 
     }
 
