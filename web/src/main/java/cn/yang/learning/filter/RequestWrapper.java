@@ -9,11 +9,11 @@ import java.util.Enumeration;
 import java.util.Map;
 import java.util.Vector;
 
-public class ParamHttpServletRequestWrapper extends HttpServletRequestWrapper {
+public class RequestWrapper extends HttpServletRequestWrapper {
     private String body;
     private Map<String, String[]> paramMap;
 
-    public ParamHttpServletRequestWrapper(HttpServletRequest request) {
+    public RequestWrapper(HttpServletRequest request) {
         super(request);
 
         paramMap = request.getParameterMap();
@@ -87,6 +87,10 @@ public class ParamHttpServletRequestWrapper extends HttpServletRequestWrapper {
 
     public void setBody(String body) {
         this.body = body;
+    }
+
+    public String getBody() {
+        return body;
     }
 
     @Override

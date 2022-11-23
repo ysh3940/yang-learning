@@ -10,11 +10,11 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 
 
-public class ParamHttpServletResponseWrapper extends HttpServletResponseWrapper {
+public class ResponseWrapper extends HttpServletResponseWrapper {
 
     private final WrapperServletOutputStream wrapperServletOutputStream = new WrapperServletOutputStream();
 
-    public ParamHttpServletResponseWrapper(HttpServletResponse response) {
+    public ResponseWrapper(HttpServletResponse response) {
         super(response);
     }
 
