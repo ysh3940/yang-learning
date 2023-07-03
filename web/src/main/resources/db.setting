@@ -1,0 +1,9 @@
+
+url = jdbc:mysql://www.yodinn.com:3306/hzdl0310
+user = root
+pass = sam040200
+
+showSql = true
+formatSql = true
+showParams = true
+sqlLevel = error
