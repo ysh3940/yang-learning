@@ -1,5 +1,5 @@
 
-url = jdbc:mysql://www.yodinn.com:3306/hzdl0310
+url = jdbc:mysql://www.yodinn.com:3306/ysh
 user = root
 pass = sam040200
 
