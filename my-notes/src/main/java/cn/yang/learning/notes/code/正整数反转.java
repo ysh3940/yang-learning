@@ -1,5 +1,6 @@
 package cn.yang.learning.notes.code;
 
+import cn.yang.learning.core.utils.LogUtils;
 import org.junit.Test;
 
 public class 正整数反转 {
@@ -14,13 +15,13 @@ public class 正整数反转 {
             sum = sum * 10 + temp;
 
             num = num / 10;
-            System.out.println(num);
+            LogUtils.println(num);
             if (num <= 0) {
                 break;
             }
         }
 
-        System.out.println(sum);
+        LogUtils.println(sum);
     }
 
 }
