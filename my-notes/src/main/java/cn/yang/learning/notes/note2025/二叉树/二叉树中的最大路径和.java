@@ -20,7 +20,7 @@ public class 二叉树中的最大路径和 {
         if (left <= 0 && right <= 0) {
             maxSum = Math.max(maxSum, root.val);
         } else {
-            maxSum = Math.max(maxSum, root.val+(left<=0?0:left)+(right<=0?0:right));
+            maxSum = Math.max(maxSum, root.val+ (left<=0?0:left) + (right<=0?0:right) );
         }
 
         if (left <= 0 && right <= 0) {
