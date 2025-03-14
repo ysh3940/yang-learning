@@ -1,6 +1,6 @@
 package cn.yang.learning.notes.note2025.interview遇到;
 
-public class zijie0312 {
+public class zijie0312_1 {
 
     public static void main(String[] args) {
         test1(new int[]{2,2,3,4,5});
