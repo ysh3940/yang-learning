@@ -63,12 +63,12 @@ public class 删除排序链表中重复的节点 extends Base {
                 continue;
             } else if (count > 0) {
                 cur = next;
-                // TODO 需要判断下head节点重复的情况
+
                 while (count >= 0) {
                     pre.setNext(pre.getNext().getNext());
                     --count;
                 }
-                // TODO pre节点需要处理,待测试
+
                 pre.setNext(cur);
                 continue;
             }
