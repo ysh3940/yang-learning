@@ -1,0 +1,2424 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="966" onload="init(evt)" viewBox="0 0 1200 966" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+		search();
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) {
+				currentSearchTerm = term;
+				search();
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (currentSearchTerm === null) return;
+		var term = currentSearchTerm;
+
+		var re = new RegExp(term, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="966.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="949" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="949" > </text>
+<g id="frames">
+<g >
+<title>java/util/Formatter.format (1 samples, 1.39%)</title><rect x="944.2" y="613" width="16.4" height="15.0" fill="rgb(215,34,25)" rx="2" ry="2" />
+<text  x="947.17" y="623.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (1 samples, 1.39%)</title><rect x="223.1" y="341" width="16.3" height="15.0" fill="rgb(230,8,6)" rx="2" ry="2" />
+<text  x="226.06" y="351.5" ></text>
+</g>
+<g >
+<title>CompileBroker::compiler_thread_loop() (3 samples, 4.17%)</title><rect x="1091.7" y="837" width="49.1" height="15.0" fill="rgb(210,202,39)" rx="2" ry="2" />
+<text  x="1094.67" y="847.5" >Comp..</text>
+</g>
+<g >
+<title>IR::eliminate_null_checks() (1 samples, 1.39%)</title><rect x="1108.1" y="725" width="16.3" height="15.0" fill="rgb(252,226,29)" rx="2" ry="2" />
+<text  x="1111.06" y="735.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301 (13 samples, 18.06%)</title><rect x="763.9" y="837" width="213.0" height="15.0" fill="rgb(253,136,11)" rx="2" ry="2" />
+<text  x="766.89" y="847.5" >java/util/concurrent/Schedul..</text>
+</g>
+<g >
+<title>java/io/FileOutputStream.writeBytes (1 samples, 1.39%)</title><rect x="190.3" y="117" width="16.4" height="15.0" fill="rgb(207,36,43)" rx="2" ry="2" />
+<text  x="193.28" y="127.5" ></text>
+</g>
+<g >
+<title>java/lang/RuntimeException.&lt;init&gt; (1 samples, 1.39%)</title><rect x="747.5" y="741" width="16.4" height="15.0" fill="rgb(226,80,6)" rx="2" ry="2" />
+<text  x="750.50" y="751.5" ></text>
+</g>
+<g >
+<title>Java_java_util_zip_ZipFile_open (1 samples, 1.39%)</title><rect x="862.2" y="373" width="16.4" height="15.0" fill="rgb(217,81,41)" rx="2" ry="2" />
+<text  x="865.22" y="383.5" ></text>
+</g>
+<g >
+<title>java/lang/CharacterDataLatin1.toUpperCase (1 samples, 1.39%)</title><rect x="829.4" y="549" width="16.4" height="15.0" fill="rgb(226,185,13)" rx="2" ry="2" />
+<text  x="832.44" y="559.5" ></text>
+</g>
+<g >
+<title>java/util/GregorianCalendar.&lt;init&gt; (1 samples, 1.39%)</title><rect x="59.2" y="629" width="16.4" height="15.0" fill="rgb(215,31,12)" rx="2" ry="2" />
+<text  x="62.17" y="639.5" ></text>
+</g>
+<g >
+<title>Java_java_io_FileOutputStream_writeBytes (1 samples, 1.39%)</title><rect x="173.9" y="117" width="16.4" height="15.0" fill="rgb(209,178,18)" rx="2" ry="2" />
+<text  x="176.89" y="127.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.doFinish (1 samples, 1.39%)</title><rect x="780.3" y="581" width="16.4" height="15.0" fill="rgb(226,60,29)" rx="2" ry="2" />
+<text  x="783.28" y="591.5" ></text>
+</g>
+<g >
+<title>sun/misc/Unsafe.park (4 samples, 5.56%)</title><rect x="288.6" y="805" width="65.6" height="15.0" fill="rgb(251,194,19)" rx="2" ry="2" />
+<text  x="291.61" y="815.5" >sun/mis..</text>
+</g>
+<g >
+<title>__write (1 samples, 1.39%)</title><rect x="141.1" y="389" width="16.4" height="15.0" fill="rgb(240,41,15)" rx="2" ry="2" />
+<text  x="144.11" y="399.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.addWaiter (1 samples, 1.39%)</title><rect x="354.2" y="789" width="16.4" height="15.0" fill="rgb(222,38,45)" rx="2" ry="2" />
+<text  x="357.17" y="799.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap.put (1 samples, 1.39%)</title><rect x="763.9" y="453" width="16.4" height="15.0" fill="rgb(240,19,1)" rx="2" ry="2" />
+<text  x="766.89" y="463.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getResource (4 samples, 5.56%)</title><rect x="878.6" y="549" width="65.6" height="15.0" fill="rgb(207,212,36)" rx="2" ry="2" />
+<text  x="881.61" y="559.5" >org/apa..</text>
+</g>
+<g >
+<title>jni_GetObjectField (1 samples, 1.39%)</title><rect x="157.5" y="389" width="16.4" height="15.0" fill="rgb(219,227,49)" rx="2" ry="2" />
+<text  x="160.50" y="399.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/SocketDispatcher.writev (3 samples, 4.17%)</title><rect x="649.2" y="581" width="49.1" height="15.0" fill="rgb(240,70,24)" rx="2" ry="2" />
+<text  x="652.17" y="591.5" >sun/..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (3 samples, 4.17%)</title><rect x="173.9" y="309" width="49.2" height="15.0" fill="rgb(244,49,30)" rx="2" ry="2" />
+<text  x="176.89" y="319.5" >java..</text>
+</g>
+<g >
+<title>java/lang/Throwable.fillInStackTrace (1 samples, 1.39%)</title><rect x="747.5" y="693" width="16.4" height="15.0" fill="rgb(214,188,33)" rx="2" ry="2" />
+<text  x="750.50" y="703.5" ></text>
+</g>
+<g >
+<title>com/jd/registry/util/EventManager.publish (7 samples, 9.72%)</title><rect x="141.1" y="853" width="114.7" height="15.0" fill="rgb(223,103,37)" rx="2" ry="2" />
+<text  x="144.11" y="863.5" >com/jd/registr..</text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/ext/fq/FileQueueSegmentReader.read (1 samples, 1.39%)</title><rect x="1026.1" y="837" width="16.4" height="15.0" fill="rgb(208,16,6)" rx="2" ry="2" />
+<text  x="1029.11" y="847.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/DefaultChannelPipeline.fireChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="773" width="16.4" height="15.0" fill="rgb(231,216,36)" rx="2" ry="2" />
+<text  x="701.33" y="783.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (2 samples, 2.78%)</title><rect x="190.3" y="181" width="32.8" height="15.0" fill="rgb(233,19,17)" rx="2" ry="2" />
+<text  x="193.28" y="191.5" >ja..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.enq (1 samples, 1.39%)</title><rect x="272.2" y="789" width="16.4" height="15.0" fill="rgb(212,32,30)" rx="2" ry="2" />
+<text  x="275.22" y="799.5" ></text>
+</g>
+<g >
+<title>pfinder/shade/com/lmax/disruptor/BatchEventProcessor.run (1 samples, 1.39%)</title><rect x="1009.7" y="885" width="16.4" height="15.0" fill="rgb(208,162,44)" rx="2" ry="2" />
+<text  x="1012.72" y="895.5" ></text>
+</g>
+<g >
+<title>all (72 samples, 100%)</title><rect x="10.0" y="917" width="1180.0" height="15.0" fill="rgb(240,206,21)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" ></text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.&lt;init&gt; (1 samples, 1.39%)</title><rect x="862.2" y="421" width="16.4" height="15.0" fill="rgb(212,116,50)" rx="2" ry="2" />
+<text  x="865.22" y="431.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (3 samples, 4.17%)</title><rect x="173.9" y="357" width="49.2" height="15.0" fill="rgb(251,54,2)" rx="2" ry="2" />
+<text  x="176.89" y="367.5" >java..</text>
+</g>
+<g >
+<title>CompileQueue::get() (1 samples, 1.39%)</title><rect x="1124.4" y="821" width="16.4" height="15.0" fill="rgb(253,130,40)" rx="2" ry="2" />
+<text  x="1127.44" y="831.5" ></text>
+</g>
+<g >
+<title>_ZL31exception_handler_for_pc_helperP10JavaThreadP7oopDescPhRP7nmethod.constprop.50 (1 samples, 1.39%)</title><rect x="845.8" y="597" width="16.4" height="15.0" fill="rgb(227,16,44)" rx="2" ry="2" />
+<text  x="848.83" y="607.5" ></text>
+</g>
+<g >
+<title>__write (1 samples, 1.39%)</title><rect x="173.9" y="85" width="16.4" height="15.0" fill="rgb(254,168,48)" rx="2" ry="2" />
+<text  x="176.89" y="95.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/AbstractHttpClient.getParams (1 samples, 1.39%)</title><rect x="862.2" y="725" width="16.4" height="15.0" fill="rgb(227,118,13)" rx="2" ry="2" />
+<text  x="865.22" y="735.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/Executors$RunnableAdapter.call (1 samples, 1.39%)</title><rect x="1026.1" y="885" width="16.4" height="15.0" fill="rgb(226,72,1)" rx="2" ry="2" />
+<text  x="1029.11" y="895.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/IOUtil.write (3 samples, 4.17%)</title><rect x="649.2" y="597" width="49.1" height="15.0" fill="rgb(210,93,21)" rx="2" ry="2" />
+<text  x="652.17" y="607.5" >sun/..</text>
+</g>
+<g >
+<title>org/apache/http/impl/client/CloseableHttpClient.execute (1 samples, 1.39%)</title><rect x="960.6" y="693" width="16.3" height="15.0" fill="rgb(223,137,45)" rx="2" ry="2" />
+<text  x="963.56" y="703.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.doAcquireInterruptibly (1 samples, 1.39%)</title><rect x="354.2" y="805" width="16.4" height="15.0" fill="rgb(248,90,1)" rx="2" ry="2" />
+<text  x="357.17" y="815.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/loader/WebappClassLoaderBase.getResource (4 samples, 5.56%)</title><rect x="878.6" y="597" width="65.6" height="15.0" fill="rgb(217,221,50)" rx="2" ry="2" />
+<text  x="881.61" y="607.5" >org/apa..</text>
+</g>
+<g >
+<title>__lll_unlock_wake (1 samples, 1.39%)</title><rect x="288.6" y="773" width="16.4" height="15.0" fill="rgb(221,61,20)" rx="2" ry="2" />
+<text  x="291.61" y="783.5" ></text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager.updateCluster (7 samples, 9.72%)</title><rect x="141.1" y="789" width="114.7" height="15.0" fill="rgb(210,142,23)" rx="2" ry="2" />
+<text  x="144.11" y="799.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>io/netty/handler/timeout/IdleStateHandler.channelIdle (1 samples, 1.39%)</title><rect x="731.1" y="725" width="16.4" height="15.0" fill="rgb(211,196,7)" rx="2" ry="2" />
+<text  x="734.11" y="735.5" ></text>
+</g>
+<g >
+<title>YoungList::rs_length_sampling_next() (2 samples, 2.78%)</title><rect x="1058.9" y="837" width="32.8" height="15.0" fill="rgb(224,3,30)" rx="2" ry="2" />
+<text  x="1061.89" y="847.5" >Yo..</text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.lockAndDoSelect (1 samples, 1.39%)</title><rect x="714.7" y="773" width="16.4" height="15.0" fill="rgb(240,136,32)" rx="2" ry="2" />
+<text  x="717.72" y="783.5" ></text>
+</g>
+<g >
+<title>com/mysql/jdbc/Util.handleNewInstance (1 samples, 1.39%)</title><rect x="59.2" y="725" width="16.4" height="15.0" fill="rgb(235,10,9)" rx="2" ry="2" />
+<text  x="62.17" y="735.5" ></text>
+</g>
+<g >
+<title>com/wangyin/schedule/sdk/ScheduleSdk.doExecute (2 samples, 2.78%)</title><rect x="829.4" y="741" width="32.8" height="15.0" fill="rgb(206,110,32)" rx="2" ry="2" />
+<text  x="832.44" y="751.5" >co..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="741" width="16.4" height="15.0" fill="rgb(210,222,35)" rx="2" ry="2" />
+<text  x="701.33" y="751.5" ></text>
+</g>
+<g >
+<title>vframeArrayElement::fill_in(compiledVFrame*, bool) (1 samples, 1.39%)</title><rect x="10.0" y="837" width="16.4" height="15.0" fill="rgb(253,210,16)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/plugin/slf4j/mdc/Slf4jMdcTracingPhaseListener.onTracingPhaseFinish (1 samples, 1.39%)</title><rect x="780.3" y="549" width="16.4" height="15.0" fill="rgb(219,212,17)" rx="2" ry="2" />
+<text  x="783.28" y="559.5" ></text>
+</g>
+<g >
+<title>java/lang/String.format (1 samples, 1.39%)</title><rect x="944.2" y="645" width="16.4" height="15.0" fill="rgb(245,173,0)" rx="2" ry="2" />
+<text  x="947.17" y="655.5" ></text>
+</g>
+<g >
+<title>org/apache/hadoop/hbase/client/PolicyServerReporter.run (1 samples, 1.39%)</title><rect x="862.2" y="789" width="16.4" height="15.0" fill="rgb(252,103,14)" rx="2" ry="2" />
+<text  x="865.22" y="799.5" ></text>
+</g>
+<g >
+<title>writeBytes (1 samples, 1.39%)</title><rect x="190.3" y="85" width="16.4" height="15.0" fill="rgb(221,181,3)" rx="2" ry="2" />
+<text  x="193.28" y="95.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.select (2 samples, 2.78%)</title><rect x="583.6" y="853" width="32.8" height="15.0" fill="rgb(235,204,36)" rx="2" ry="2" />
+<text  x="586.61" y="863.5" >io..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.finishSpanButNoReport (1 samples, 1.39%)</title><rect x="780.3" y="597" width="16.4" height="15.0" fill="rgb(216,102,3)" rx="2" ry="2" />
+<text  x="783.28" y="607.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.processDeregisterQueue (1 samples, 1.39%)</title><rect x="714.7" y="741" width="16.4" height="15.0" fill="rgb(226,208,23)" rx="2" ry="2" />
+<text  x="717.72" y="751.5" ></text>
+</g>
+<g >
+<title>com/jd/ump/profiler/util/DateFormatUtil.formatTime (1 samples, 1.39%)</title><rect x="370.6" y="837" width="16.3" height="15.0" fill="rgb(253,206,20)" rx="2" ry="2" />
+<text  x="373.56" y="847.5" ></text>
+</g>
+<g >
+<title>java/lang/reflect/Method.invoke (7 samples, 9.72%)</title><rect x="141.1" y="677" width="114.7" height="15.0" fill="rgb(231,160,54)" rx="2" ry="2" />
+<text  x="144.11" y="687.5" >java/lang/refl..</text>
+</g>
+<g >
+<title>JNIHandles::make_local(JNIEnv_*, oopDesc*) (1 samples, 1.39%)</title><rect x="223.1" y="213" width="16.3" height="15.0" fill="rgb(230,202,44)" rx="2" ry="2" />
+<text  x="226.06" y="223.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/Executors$RunnableAdapter.call (13 samples, 18.06%)</title><rect x="763.9" y="805" width="213.0" height="15.0" fill="rgb(241,48,6)" rx="2" ry="2" />
+<text  x="766.89" y="815.5" >java/util/concurrent/Executo..</text>
+</g>
+<g >
+<title>LinearScan::assign_reg_num(LIR_OpList*, IntervalWalker*) (1 samples, 1.39%)</title><rect x="1091.7" y="693" width="16.4" height="15.0" fill="rgb(227,26,31)" rx="2" ry="2" />
+<text  x="1094.67" y="703.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.fireUserEventTriggered (1 samples, 1.39%)</title><rect x="731.1" y="709" width="16.4" height="15.0" fill="rgb(243,205,40)" rx="2" ry="2" />
+<text  x="734.11" y="719.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/JsfFlushHandler.lambda$new$0 (4 samples, 5.56%)</title><rect x="632.8" y="773" width="65.5" height="15.0" fill="rgb(216,127,10)" rx="2" ry="2" />
+<text  x="635.78" y="783.5" >com/jd/..</text>
+</g>
+<g >
+<title>org/apache/http/util/VersionInfo.getUserAgent (1 samples, 1.39%)</title><rect x="944.2" y="661" width="16.4" height="15.0" fill="rgb(241,66,49)" rx="2" ry="2" />
+<text  x="947.17" y="671.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/codec/LengthFieldBasedFrameDecoder.decode (1 samples, 1.39%)</title><rect x="698.3" y="613" width="16.4" height="15.0" fill="rgb(214,59,33)" rx="2" ry="2" />
+<text  x="701.33" y="623.5" ></text>
+</g>
+<g >
+<title>com/mchange/v2/resourcepool/BasicResourcePool.doAcquireAndDecrementPendingAcquiresWithinLockOnSuccess (1 samples, 1.39%)</title><rect x="59.2" y="853" width="16.4" height="15.0" fill="rgb(208,15,24)" rx="2" ry="2" />
+<text  x="62.17" y="863.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (7 samples, 9.72%)</title><rect x="141.1" y="565" width="114.7" height="15.0" fill="rgb(209,78,46)" rx="2" ry="2" />
+<text  x="144.11" y="575.5" >java/io/Object..</text>
+</g>
+<g >
+<title>javax/xml/bind/ContextFinder.loadJAXBProperties (4 samples, 5.56%)</title><rect x="878.6" y="645" width="65.6" height="15.0" fill="rgb(239,139,24)" rx="2" ry="2" />
+<text  x="881.61" y="655.5" >javax/x..</text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue.add (1 samples, 1.39%)</title><rect x="976.9" y="805" width="16.4" height="15.0" fill="rgb(214,216,51)" rx="2" ry="2" />
+<text  x="979.94" y="815.5" ></text>
+</g>
+<g >
+<title>com/jd/jmq/common/cluster/Broker.&lt;init&gt; (1 samples, 1.39%)</title><rect x="698.3" y="565" width="16.4" height="15.0" fill="rgb(253,220,53)" rx="2" ry="2" />
+<text  x="701.33" y="575.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/channel/JSFUnsafeWrap.flush (4 samples, 5.56%)</title><rect x="632.8" y="693" width="65.5" height="15.0" fill="rgb(252,204,42)" rx="2" ry="2" />
+<text  x="635.78" y="703.5" >com/jd/..</text>
+</g>
+<g >
+<title>com/mchange/v2/c3p0/impl/C3P0PooledConnectionPool$1PooledConnectionResourcePoolManager.acquireResource (1 samples, 1.39%)</title><rect x="59.2" y="821" width="16.4" height="15.0" fill="rgb(252,86,29)" rx="2" ry="2" />
+<text  x="62.17" y="831.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/LockSupport.parkNanos (4 samples, 5.56%)</title><rect x="288.6" y="821" width="65.6" height="15.0" fill="rgb(248,72,2)" rx="2" ry="2" />
+<text  x="291.61" y="831.5" >java/ut..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/plugin/interceptor/AbstractInterceptingContextImpl.finishTracingSpanButNoReport (1 samples, 1.39%)</title><rect x="780.3" y="629" width="16.4" height="15.0" fill="rgb(251,146,27)" rx="2" ry="2" />
+<text  x="783.28" y="639.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/timeout/IdleStateHandler$AllIdleTimeoutTask.run (1 samples, 1.39%)</title><rect x="731.1" y="741" width="16.4" height="15.0" fill="rgb(252,137,46)" rx="2" ry="2" />
+<text  x="734.11" y="751.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore() (1 samples, 1.39%)</title><rect x="1042.5" y="853" width="16.4" height="15.0" fill="rgb(237,115,15)" rx="2" ry="2" />
+<text  x="1045.50" y="863.5" ></text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HttpClientUtil.post (1 samples, 1.39%)</title><rect x="862.2" y="741" width="16.4" height="15.0" fill="rgb(214,45,53)" rx="2" ry="2" />
+<text  x="865.22" y="751.5" ></text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager.updateCluster (7 samples, 9.72%)</title><rect x="141.1" y="805" width="114.7" height="15.0" fill="rgb(247,15,36)" rx="2" ry="2" />
+<text  x="144.11" y="815.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>SafepointSynchronize::do_cleanup_tasks() (3 samples, 4.17%)</title><rect x="1140.8" y="821" width="49.2" height="15.0" fill="rgb(214,181,5)" rx="2" ry="2" />
+<text  x="1143.83" y="831.5" >Safe..</text>
+</g>
+<g >
+<title>io/netty/channel/nio/AbstractNioByteChannel$NioByteUnsafe.read (1 samples, 1.39%)</title><rect x="698.3" y="789" width="16.4" height="15.0" fill="rgb(207,83,52)" rx="2" ry="2" />
+<text  x="701.33" y="799.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/LinkedBlockingDeque.put (1 samples, 1.39%)</title><rect x="731.1" y="613" width="16.4" height="15.0" fill="rgb(239,89,52)" rx="2" ry="2" />
+<text  x="734.11" y="623.5" ></text>
+</g>
+<g >
+<title>_ZN21ThreadStateTransition20transition_and_fenceEP10JavaThread15JavaThreadStateS2_.constprop.116 (1 samples, 1.39%)</title><rect x="157.5" y="373" width="16.4" height="15.0" fill="rgb(250,185,31)" rx="2" ry="2" />
+<text  x="160.50" y="383.5" ></text>
+</g>
+<g >
+<title>java/util/GregorianCalendar.computeFields (1 samples, 1.39%)</title><rect x="59.2" y="565" width="16.4" height="15.0" fill="rgb(208,209,35)" rx="2" ry="2" />
+<text  x="62.17" y="575.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/JsfFlushHandler$$Lambda$609/972452852.run (4 samples, 5.56%)</title><rect x="632.8" y="789" width="65.5" height="15.0" fill="rgb(227,10,52)" rx="2" ry="2" />
+<text  x="635.78" y="799.5" >com/jd/..</text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager$UpdateClusterListener.onEvent (7 samples, 9.72%)</title><rect x="141.1" y="821" width="114.7" height="15.0" fill="rgb(249,13,1)" rx="2" ry="2" />
+<text  x="144.11" y="831.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/CachedResource.validateResource (4 samples, 5.56%)</title><rect x="878.6" y="517" width="65.6" height="15.0" fill="rgb(229,92,35)" rx="2" ry="2" />
+<text  x="881.61" y="527.5" >org/apa..</text>
+</g>
+<g >
+<title>com/wangyin/schedule/client/ScheduleClient$GenerateTaskRunnable.run (2 samples, 2.78%)</title><rect x="829.4" y="789" width="32.8" height="15.0" fill="rgb(207,116,40)" rx="2" ry="2" />
+<text  x="832.44" y="799.5" >co..</text>
+</g>
+<g >
+<title>sun/nio/ch/EPollArrayWrapper.epollWait (2 samples, 2.78%)</title><rect x="583.6" y="757" width="32.8" height="15.0" fill="rgb(253,182,4)" rx="2" ry="2" />
+<text  x="586.61" y="767.5" >su..</text>
+</g>
+<g >
+<title>io/netty/util/HashedWheelTimer$Worker.waitForNextTick (11 samples, 15.28%)</title><rect x="403.3" y="869" width="180.3" height="15.0" fill="rgb(231,144,0)" rx="2" ry="2" />
+<text  x="406.33" y="879.5" >io/netty/util/HashedWhe..</text>
+</g>
+<g >
+<title>__GI_vfprintf (1 samples, 1.39%)</title><rect x="26.4" y="869" width="16.4" height="15.0" fill="rgb(222,43,20)" rx="2" ry="2" />
+<text  x="29.39" y="879.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/reporter/TraceRemoteReporter$NodeEventHandler.onEvent (1 samples, 1.39%)</title><rect x="1009.7" y="853" width="16.4" height="15.0" fill="rgb(216,214,9)" rx="2" ry="2" />
+<text  x="1012.72" y="863.5" ></text>
+</g>
+<g >
+<title>com/mysql/jdbc/ConnectionImpl.getInstance (1 samples, 1.39%)</title><rect x="59.2" y="741" width="16.4" height="15.0" fill="rgb(207,187,6)" rx="2" ry="2" />
+<text  x="62.17" y="751.5" ></text>
+</g>
+<g >
+<title>sun/net/www/protocol/http/HttpURLConnection.getFilteredHeaderFields (1 samples, 1.39%)</title><rect x="829.4" y="645" width="16.4" height="15.0" fill="rgb(234,52,17)" rx="2" ry="2" />
+<text  x="832.44" y="655.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/codec/ByteToMessageDecoder.channelRead (1 samples, 1.39%)</title><rect x="698.3" y="661" width="16.4" height="15.0" fill="rgb(217,146,1)" rx="2" ry="2" />
+<text  x="701.33" y="671.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/AbstractNioChannel$AbstractNioUnsafe.flush0 (4 samples, 5.56%)</title><rect x="632.8" y="661" width="65.5" height="15.0" fill="rgb(224,98,0)" rx="2" ry="2" />
+<text  x="635.78" y="671.5" >io/nett..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteFields (1 samples, 1.39%)</title><rect x="173.9" y="181" width="16.4" height="15.0" fill="rgb(236,154,11)" rx="2" ry="2" />
+<text  x="176.89" y="191.5" ></text>
+</g>
+<g >
+<title>Monitor::unlock() (1 samples, 1.39%)</title><rect x="1058.9" y="821" width="16.4" height="15.0" fill="rgb(249,217,11)" rx="2" ry="2" />
+<text  x="1061.89" y="831.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/SingleThreadEventExecutor$4.run (3 samples, 4.17%)</title><rect x="698.3" y="869" width="49.2" height="15.0" fill="rgb(242,198,47)" rx="2" ry="2" />
+<text  x="701.33" y="879.5" >io/n..</text>
+</g>
+<g >
+<title>__pthread_disable_asynccancel (1 samples, 1.39%)</title><rect x="501.7" y="805" width="16.4" height="15.0" fill="rgb(211,180,54)" rx="2" ry="2" />
+<text  x="504.67" y="815.5" ></text>
+</g>
+<g >
+<title>com/jd/ump/profiler/reporter/jmtp/JmtpTransportReporter$JmtpTransportHandler.handle (1 samples, 1.39%)</title><rect x="370.6" y="869" width="16.3" height="15.0" fill="rgb(213,77,3)" rx="2" ry="2" />
+<text  x="373.56" y="879.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannel$AbstractUnsafe.flush (4 samples, 5.56%)</title><rect x="632.8" y="677" width="65.5" height="15.0" fill="rgb(223,131,41)" rx="2" ry="2" />
+<text  x="635.78" y="687.5" >io/nett..</text>
+</g>
+<g >
+<title>com/mysql/jdbc/NonRegisteringDriver.connect (1 samples, 1.39%)</title><rect x="59.2" y="757" width="16.4" height="15.0" fill="rgb(246,151,26)" rx="2" ry="2" />
+<text  x="62.17" y="767.5" ></text>
+</g>
+<g >
+<title>LinearScan::compute_debug_info_for_scope(int, IRScope*, ValueStack*, ValueStack*) (1 samples, 1.39%)</title><rect x="1091.7" y="661" width="16.4" height="15.0" fill="rgb(239,82,42)" rx="2" ry="2" />
+<text  x="1094.67" y="671.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="693" width="16.4" height="15.0" fill="rgb(232,142,26)" rx="2" ry="2" />
+<text  x="701.33" y="703.5" ></text>
+</g>
+<g >
+<title>com/jd/traceholder/Context.get (1 samples, 1.39%)</title><rect x="813.1" y="645" width="16.3" height="15.0" fill="rgb(227,183,45)" rx="2" ry="2" />
+<text  x="816.06" y="655.5" ></text>
+</g>
+<g >
+<title>com/jd/jex/connection/AbstractConnection.send (1 samples, 1.39%)</title><rect x="747.5" y="773" width="16.4" height="15.0" fill="rgb(228,75,14)" rx="2" ry="2" />
+<text  x="750.50" y="783.5" ></text>
+</g>
+<g >
+<title>JVM_FillInStackTrace (1 samples, 1.39%)</title><rect x="747.5" y="645" width="16.4" height="15.0" fill="rgb(244,203,30)" rx="2" ry="2" />
+<text  x="750.50" y="655.5" ></text>
+</g>
+<g >
+<title>[vdso] (1 samples, 1.39%)</title><rect x="534.4" y="805" width="16.4" height="15.0" fill="rgb(208,108,28)" rx="2" ry="2" />
+<text  x="537.44" y="815.5" ></text>
+</g>
+<g >
+<title>writeBytes (2 samples, 2.78%)</title><rect x="141.1" y="405" width="32.8" height="15.0" fill="rgb(254,66,36)" rx="2" ry="2" />
+<text  x="144.11" y="415.5" >wr..</text>
+</g>
+<g >
+<title>com/jd/registry/util/EventManager.add (1 samples, 1.39%)</title><rect x="731.1" y="645" width="16.4" height="15.0" fill="rgb(209,156,30)" rx="2" ry="2" />
+<text  x="734.11" y="655.5" ></text>
+</g>
+<g >
+<title>Deoptimization::fetch_unroll_info(JavaThread*) (1 samples, 1.39%)</title><rect x="10.0" y="885" width="16.4" height="15.0" fill="rgb(240,157,30)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" ></text>
+</g>
+<g >
+<title>sun/reflect/GeneratedConstructorAccessor131.newInstance (1 samples, 1.39%)</title><rect x="59.2" y="677" width="16.4" height="15.0" fill="rgb(223,60,35)" rx="2" ry="2" />
+<text  x="62.17" y="687.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.writeBytes (1 samples, 1.39%)</title><rect x="206.7" y="85" width="16.4" height="15.0" fill="rgb(225,193,32)" rx="2" ry="2" />
+<text  x="209.67" y="95.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/JSFClientTransport.sendAsyn (2 samples, 2.78%)</title><rect x="763.9" y="709" width="32.8" height="15.0" fill="rgb(231,202,22)" rx="2" ry="2" />
+<text  x="766.89" y="719.5" >co..</text>
+</g>
+<g >
+<title>com/jd/registry/util/EventManager$EventDispatcher.run (14 samples, 19.44%)</title><rect x="141.1" y="885" width="229.5" height="15.0" fill="rgb(240,127,50)" rx="2" ry="2" />
+<text  x="144.11" y="895.5" >com/jd/registry/util/EventMana..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteFields (1 samples, 1.39%)</title><rect x="206.7" y="133" width="16.4" height="15.0" fill="rgb(215,113,14)" rx="2" ry="2" />
+<text  x="209.67" y="143.5" ></text>
+</g>
+<g >
+<title>_ZN21ThreadStateTransition22transition_from_nativeEP10JavaThread15JavaThreadState.constprop.166 (1 samples, 1.39%)</title><rect x="567.2" y="837" width="16.4" height="15.0" fill="rgb(232,5,33)" rx="2" ry="2" />
+<text  x="570.22" y="847.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/utils/JmtpDecodeUtils.readBytes (1 samples, 1.39%)</title><rect x="1026.1" y="725" width="16.4" height="15.0" fill="rgb(226,119,22)" rx="2" ry="2" />
+<text  x="1029.11" y="735.5" ></text>
+</g>
+<g >
+<title>__pthread_cond_timedwait (3 samples, 4.17%)</title><rect x="305.0" y="773" width="49.2" height="15.0" fill="rgb(242,121,47)" rx="2" ry="2" />
+<text  x="308.00" y="783.5" >__pt..</text>
+</g>
+<g >
+<title>__vsnprintf (1 samples, 1.39%)</title><rect x="26.4" y="885" width="16.4" height="15.0" fill="rgb(243,201,37)" rx="2" ry="2" />
+<text  x="29.39" y="895.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.finishSpanButNoReport (1 samples, 1.39%)</title><rect x="780.3" y="613" width="16.4" height="15.0" fill="rgb(249,216,11)" rx="2" ry="2" />
+<text  x="783.28" y="623.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.write (1 samples, 1.39%)</title><rect x="223.1" y="293" width="16.3" height="15.0" fill="rgb(238,151,5)" rx="2" ry="2" />
+<text  x="226.06" y="303.5" ></text>
+</g>
+<g >
+<title>ZIP_Put_In_Cache0 (4 samples, 5.56%)</title><rect x="878.6" y="309" width="65.6" height="15.0" fill="rgb(230,156,11)" rx="2" ry="2" />
+<text  x="881.61" y="319.5" >ZIP_Put..</text>
+</g>
+<g >
+<title>org/apache/hadoop/hbase/client/policy/impl/HttpPolicyClient.run (6 samples, 8.33%)</title><rect x="878.6" y="789" width="98.3" height="15.0" fill="rgb(209,82,49)" rx="2" ry="2" />
+<text  x="881.61" y="799.5" >org/apache/..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (7 samples, 9.72%)</title><rect x="141.1" y="597" width="114.7" height="15.0" fill="rgb(218,89,0)" rx="2" ry="2" />
+<text  x="144.11" y="607.5" >java/io/Object..</text>
+</g>
+<g >
+<title>com/wangyin/schedule/sdk/ScheduleSdk.execute (2 samples, 2.78%)</title><rect x="829.4" y="709" width="32.8" height="15.0" fill="rgb(240,222,35)" rx="2" ry="2" />
+<text  x="832.44" y="719.5" >co..</text>
+</g>
+<g >
+<title>java/io/ObjectStreamClass.invokeWriteObject (4 samples, 5.56%)</title><rect x="173.9" y="485" width="65.5" height="15.0" fill="rgb(248,101,27)" rx="2" ry="2" />
+<text  x="176.89" y="495.5" >java/io..</text>
+</g>
+<g >
+<title>org/apache/logging/log4j/spi/AbstractLogger.logIfEnabled (1 samples, 1.39%)</title><rect x="813.1" y="565" width="16.3" height="15.0" fill="rgb(218,5,46)" rx="2" ry="2" />
+<text  x="816.06" y="575.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/ScheduledFutureTask.run (1 samples, 1.39%)</title><rect x="731.1" y="789" width="16.4" height="15.0" fill="rgb(241,4,46)" rx="2" ry="2" />
+<text  x="734.11" y="799.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (3 samples, 4.17%)</title><rect x="173.9" y="389" width="49.2" height="15.0" fill="rgb(251,15,10)" rx="2" ry="2" />
+<text  x="176.89" y="399.5" >java..</text>
+</g>
+<g >
+<title>java/io/FileOutputStream.writeBytes (1 samples, 1.39%)</title><rect x="223.1" y="277" width="16.3" height="15.0" fill="rgb(225,133,19)" rx="2" ry="2" />
+<text  x="226.06" y="287.5" ></text>
+</g>
+<g >
+<title>Unsafe_Park (1 samples, 1.39%)</title><rect x="993.3" y="757" width="16.4" height="15.0" fill="rgb(219,157,33)" rx="2" ry="2" />
+<text  x="996.33" y="767.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/DefaultHttpClient.setDefaultHttpParams (1 samples, 1.39%)</title><rect x="862.2" y="693" width="16.4" height="15.0" fill="rgb(254,68,38)" rx="2" ry="2" />
+<text  x="865.22" y="703.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap.&lt;init&gt; (1 samples, 1.39%)</title><rect x="780.3" y="469" width="16.4" height="15.0" fill="rgb(241,68,2)" rx="2" ry="2" />
+<text  x="783.28" y="479.5" ></text>
+</g>
+<g >
+<title>_ZN11Compilation9build_hirEv.part.78 (1 samples, 1.39%)</title><rect x="1108.1" y="741" width="16.3" height="15.0" fill="rgb(205,193,0)" rx="2" ry="2" />
+<text  x="1111.06" y="751.5" ></text>
+</g>
+<g >
+<title>readCEN (1 samples, 1.39%)</title><rect x="862.2" y="341" width="16.4" height="15.0" fill="rgb(249,173,17)" rx="2" ry="2" />
+<text  x="865.22" y="351.5" ></text>
+</g>
+<g >
+<title>readCEN (4 samples, 5.56%)</title><rect x="878.6" y="293" width="65.6" height="15.0" fill="rgb(213,56,44)" rx="2" ry="2" />
+<text  x="881.61" y="303.5" >readCEN</text>
+</g>
+<g >
+<title>org/apache/tomcat/util/compat/JreCompat.jarFileNewInstance (4 samples, 5.56%)</title><rect x="878.6" y="437" width="65.6" height="15.0" fill="rgb(226,14,8)" rx="2" ry="2" />
+<text  x="881.61" y="447.5" >org/apa..</text>
+</g>
+<g >
+<title>java/util/HashMap.putMapEntries (1 samples, 1.39%)</title><rect x="780.3" y="453" width="16.4" height="15.0" fill="rgb(252,152,0)" rx="2" ry="2" />
+<text  x="783.28" y="463.5" ></text>
+</g>
+<g >
+<title>Compilation::emit_lir() (1 samples, 1.39%)</title><rect x="1091.7" y="741" width="16.4" height="15.0" fill="rgb(249,158,32)" rx="2" ry="2" />
+<text  x="1094.67" y="751.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor.reExecutePeriodic (1 samples, 1.39%)</title><rect x="976.9" y="837" width="16.4" height="15.0" fill="rgb(228,66,29)" rx="2" ry="2" />
+<text  x="979.94" y="847.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.write (1 samples, 1.39%)</title><rect x="190.3" y="133" width="16.4" height="15.0" fill="rgb(252,156,0)" rx="2" ry="2" />
+<text  x="193.28" y="143.5" ></text>
+</g>
+<g >
+<title>Runtime1::new_type_array(JavaThread*, Klass*, int) (1 samples, 1.39%)</title><rect x="1026.1" y="709" width="16.4" height="15.0" fill="rgb(216,186,24)" rx="2" ry="2" />
+<text  x="1029.11" y="719.5" ></text>
+</g>
+<g >
+<title>Java_java_util_zip_ZipFile_open (4 samples, 5.56%)</title><rect x="878.6" y="325" width="65.6" height="15.0" fill="rgb(229,143,20)" rx="2" ry="2" />
+<text  x="881.61" y="335.5" >Java_ja..</text>
+</g>
+<g >
+<title>java/util/Collections$UnmodifiableMap.entrySet (1 samples, 1.39%)</title><rect x="780.3" y="437" width="16.4" height="15.0" fill="rgb(245,196,53)" rx="2" ry="2" />
+<text  x="783.28" y="447.5" ></text>
+</g>
+<g >
+<title>LinearScan::do_linear_scan() (1 samples, 1.39%)</title><rect x="1091.7" y="725" width="16.4" height="15.0" fill="rgb(218,186,35)" rx="2" ry="2" />
+<text  x="1094.67" y="735.5" ></text>
+</g>
+<g >
+<title>ObjectSynchronizer::deflate_idle_monitors() (3 samples, 4.17%)</title><rect x="1140.8" y="805" width="49.2" height="15.0" fill="rgb(231,137,40)" rx="2" ry="2" />
+<text  x="1143.83" y="815.5" >Obje..</text>
+</g>
+<g >
+<title>com/jd/jsf/gd/client/ConnectionHolder.access$100 (4 samples, 5.56%)</title><rect x="763.9" y="773" width="65.5" height="15.0" fill="rgb(241,82,13)" rx="2" ry="2" />
+<text  x="766.89" y="783.5" >com/jd/..</text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HttpClientUtil.parseObject (4 samples, 5.56%)</title><rect x="878.6" y="709" width="65.6" height="15.0" fill="rgb(238,144,19)" rx="2" ry="2" />
+<text  x="881.61" y="719.5" >com/jd/..</text>
+</g>
+<g >
+<title>LinearScan::compute_debug_info_for_scope(int, IRScope*, ValueStack*, ValueStack*) (1 samples, 1.39%)</title><rect x="1091.7" y="677" width="16.4" height="15.0" fill="rgb(249,173,28)" rx="2" ry="2" />
+<text  x="1094.67" y="687.5" ></text>
+</g>
+<g >
+<title>compiledVFrame::locals() const (1 samples, 1.39%)</title><rect x="10.0" y="821" width="16.4" height="15.0" fill="rgb(228,204,44)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" ></text>
+</g>
+<g >
+<title>__GI_epoll_wait (2 samples, 2.78%)</title><rect x="583.6" y="741" width="32.8" height="15.0" fill="rgb(254,84,43)" rx="2" ry="2" />
+<text  x="586.61" y="751.5" >__..</text>
+</g>
+<g >
+<title>com/mysql/jdbc/JDBC4Connection.&lt;init&gt; (1 samples, 1.39%)</title><rect x="59.2" y="661" width="16.4" height="15.0" fill="rgb(246,137,1)" rx="2" ry="2" />
+<text  x="62.17" y="671.5" ></text>
+</g>
+<g >
+<title>java/lang/String.length (1 samples, 1.39%)</title><rect x="960.6" y="565" width="16.3" height="15.0" fill="rgb(230,90,25)" rx="2" ry="2" />
+<text  x="963.56" y="575.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/SelectedSelectionKeySetSelector.select (1 samples, 1.39%)</title><rect x="714.7" y="821" width="16.4" height="15.0" fill="rgb(231,55,24)" rx="2" ry="2" />
+<text  x="717.72" y="831.5" ></text>
+</g>
+<g >
+<title>JVM_MonitorWait (1 samples, 1.39%)</title><rect x="1042.5" y="869" width="16.4" height="15.0" fill="rgb(253,153,11)" rx="2" ry="2" />
+<text  x="1045.50" y="879.5" ></text>
+</g>
+<g >
+<title>ConcurrentG1RefineThread::run() (2 samples, 2.78%)</title><rect x="1058.9" y="869" width="32.8" height="15.0" fill="rgb(230,84,54)" rx="2" ry="2" />
+<text  x="1061.89" y="879.5" >Co..</text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue.add (1 samples, 1.39%)</title><rect x="976.9" y="821" width="16.4" height="15.0" fill="rgb(231,188,53)" rx="2" ry="2" />
+<text  x="979.94" y="831.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/utils/JmtpDecodeUtils.readAllBytes (1 samples, 1.39%)</title><rect x="1026.1" y="741" width="16.4" height="15.0" fill="rgb(246,229,3)" rx="2" ry="2" />
+<text  x="1029.11" y="751.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$ConditionObject.doSignal (1 samples, 1.39%)</title><rect x="731.1" y="549" width="16.4" height="15.0" fill="rgb(250,214,21)" rx="2" ry="2" />
+<text  x="734.11" y="559.5" ></text>
+</g>
+<g >
+<title>org/apache/hadoop/hbase/client/policy/impl/HttpPolicyClient.getConnectionInfoFromPolicyServer (6 samples, 8.33%)</title><rect x="878.6" y="757" width="98.3" height="15.0" fill="rgb(231,58,26)" rx="2" ry="2" />
+<text  x="881.61" y="767.5" >org/apache/..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$ConditionObject.signal (1 samples, 1.39%)</title><rect x="731.1" y="565" width="16.4" height="15.0" fill="rgb(211,158,22)" rx="2" ry="2" />
+<text  x="734.11" y="575.5" ></text>
+</g>
+<g >
+<title>java/util/GregorianCalendar.computeFields (1 samples, 1.39%)</title><rect x="59.2" y="581" width="16.4" height="15.0" fill="rgb(251,214,52)" rx="2" ry="2" />
+<text  x="62.17" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jLogger$$Lambda$84/1758959587.run (1 samples, 1.39%)</title><rect x="813.1" y="597" width="16.3" height="15.0" fill="rgb(236,147,8)" rx="2" ry="2" />
+<text  x="816.06" y="607.5" ></text>
+</g>
+<g >
+<title>java/lang/Exception.&lt;init&gt; (1 samples, 1.39%)</title><rect x="747.5" y="725" width="16.4" height="15.0" fill="rgb(239,1,8)" rx="2" ry="2" />
+<text  x="750.50" y="735.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jLogger.debug (1 samples, 1.39%)</title><rect x="813.1" y="629" width="16.3" height="15.0" fill="rgb(205,222,3)" rx="2" ry="2" />
+<text  x="816.06" y="639.5" ></text>
+</g>
+<g >
+<title>java/util/StringTokenizer.scanToken (1 samples, 1.39%)</title><rect x="698.3" y="533" width="16.4" height="15.0" fill="rgb(214,198,19)" rx="2" ry="2" />
+<text  x="701.33" y="543.5" ></text>
+</g>
+<g >
+<title>StackValue::create_stack_value(frame const*, RegisterMap const*, ScopeValue*) (1 samples, 1.39%)</title><rect x="10.0" y="805" width="16.4" height="15.0" fill="rgb(244,225,28)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/socket/nio/NioSocketChannel.doWrite (4 samples, 5.56%)</title><rect x="632.8" y="629" width="65.5" height="15.0" fill="rgb(253,7,41)" rx="2" ry="2" />
+<text  x="635.78" y="639.5" >io/nett..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (7 samples, 9.72%)</title><rect x="141.1" y="581" width="114.7" height="15.0" fill="rgb(249,51,15)" rx="2" ry="2" />
+<text  x="144.11" y="591.5" >java/io/Object..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.initTracingNode (1 samples, 1.39%)</title><rect x="763.9" y="565" width="16.4" height="15.0" fill="rgb(248,122,54)" rx="2" ry="2" />
+<text  x="766.89" y="575.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.write (1 samples, 1.39%)</title><rect x="206.7" y="117" width="16.4" height="15.0" fill="rgb(238,154,8)" rx="2" ry="2" />
+<text  x="209.67" y="127.5" ></text>
+</g>
+<g >
+<title>Unsafe_Park (4 samples, 5.56%)</title><rect x="288.6" y="789" width="65.6" height="15.0" fill="rgb(254,64,25)" rx="2" ry="2" />
+<text  x="291.61" y="799.5" >Unsafe_..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/Cache.getResource (4 samples, 5.56%)</title><rect x="878.6" y="533" width="65.6" height="15.0" fill="rgb(254,36,54)" rx="2" ry="2" />
+<text  x="881.61" y="543.5" >org/apa..</text>
+</g>
+<g >
+<title>JVM_Sleep (4 samples, 5.56%)</title><rect x="75.6" y="837" width="65.5" height="15.0" fill="rgb(250,12,11)" rx="2" ry="2" />
+<text  x="78.56" y="847.5" >JVM_Sleep</text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.processSelectedKeys (1 samples, 1.39%)</title><rect x="698.3" y="837" width="16.4" height="15.0" fill="rgb(209,154,5)" rx="2" ry="2" />
+<text  x="701.33" y="847.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/codec/ByteToMessageDecoder.decodeRemovalReentryProtection (1 samples, 1.39%)</title><rect x="698.3" y="629" width="16.4" height="15.0" fill="rgb(239,192,21)" rx="2" ry="2" />
+<text  x="701.33" y="639.5" ></text>
+</g>
+<g >
+<title>java/lang/Character.toUpperCase (1 samples, 1.39%)</title><rect x="829.4" y="581" width="16.4" height="15.0" fill="rgb(235,128,31)" rx="2" ry="2" />
+<text  x="832.44" y="591.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/FutureTask.run (1 samples, 1.39%)</title><rect x="1026.1" y="901" width="16.4" height="15.0" fill="rgb(209,9,12)" rx="2" ry="2" />
+<text  x="1029.11" y="911.5" ></text>
+</g>
+<g >
+<title>java/lang/String.charAt (1 samples, 1.39%)</title><rect x="698.3" y="517" width="16.4" height="15.0" fill="rgb(224,55,33)" rx="2" ry="2" />
+<text  x="701.33" y="527.5" ></text>
+</g>
+<g >
+<title>com/jd/jex/connection/LockedDownException.&lt;init&gt; (1 samples, 1.39%)</title><rect x="747.5" y="757" width="16.4" height="15.0" fill="rgb(248,201,6)" rx="2" ry="2" />
+<text  x="750.50" y="767.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="677" width="16.4" height="15.0" fill="rgb(235,142,37)" rx="2" ry="2" />
+<text  x="701.33" y="687.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/v1/codec/ReportPacketCodec.decode (1 samples, 1.39%)</title><rect x="1026.1" y="757" width="16.4" height="15.0" fill="rgb(230,1,18)" rx="2" ry="2" />
+<text  x="1029.11" y="767.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractArchiveResourceSet.getResource (4 samples, 5.56%)</title><rect x="878.6" y="485" width="65.6" height="15.0" fill="rgb(215,36,7)" rx="2" ry="2" />
+<text  x="881.61" y="495.5" >org/apa..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (6 samples, 8.33%)</title><rect x="141.1" y="501" width="98.3" height="15.0" fill="rgb(228,110,40)" rx="2" ry="2" />
+<text  x="144.11" y="511.5" >java/io/Obj..</text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager$UpdateClusterListener.onEvent (7 samples, 9.72%)</title><rect x="141.1" y="837" width="114.7" height="15.0" fill="rgb(244,3,35)" rx="2" ry="2" />
+<text  x="144.11" y="847.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteFields (7 samples, 9.72%)</title><rect x="141.1" y="549" width="114.7" height="15.0" fill="rgb(223,135,17)" rx="2" ry="2" />
+<text  x="144.11" y="559.5" >java/io/Object..</text>
+</g>
+<g >
+<title>com/wangyin/schedule/sdk/request/AbstractRequest.execute (2 samples, 2.78%)</title><rect x="829.4" y="725" width="32.8" height="15.0" fill="rgb(232,184,46)" rx="2" ry="2" />
+<text  x="832.44" y="735.5" >co..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/ReentrantLock.lockInterruptibly (1 samples, 1.39%)</title><rect x="354.2" y="837" width="16.4" height="15.0" fill="rgb(232,105,47)" rx="2" ry="2" />
+<text  x="357.17" y="847.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/log4j/ThreadContext.put (1 samples, 1.39%)</title><rect x="763.9" y="485" width="16.4" height="15.0" fill="rgb(248,195,52)" rx="2" ry="2" />
+<text  x="766.89" y="495.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.createSpan (1 samples, 1.39%)</title><rect x="763.9" y="613" width="16.4" height="15.0" fill="rgb(209,125,24)" rx="2" ry="2" />
+<text  x="766.89" y="623.5" ></text>
+</g>
+<g >
+<title>java_lang_Throwable::fill_in_stack_trace(Handle, methodHandle, Thread*) (1 samples, 1.39%)</title><rect x="747.5" y="613" width="16.4" height="15.0" fill="rgb(239,120,24)" rx="2" ry="2" />
+<text  x="750.50" y="623.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/client/ConnectionHolder$2.run (4 samples, 5.56%)</title><rect x="763.9" y="789" width="65.5" height="15.0" fill="rgb(223,155,50)" rx="2" ry="2" />
+<text  x="766.89" y="799.5" >com/jd/..</text>
+</g>
+<g >
+<title>org/apache/logging/log4j/ThreadContext.remove (1 samples, 1.39%)</title><rect x="780.3" y="501" width="16.4" height="15.0" fill="rgb(209,154,18)" rx="2" ry="2" />
+<text  x="783.28" y="511.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/loader/WebappClassLoaderBase.getResourceAsStream (1 samples, 1.39%)</title><rect x="862.2" y="629" width="16.4" height="15.0" fill="rgb(229,89,51)" rx="2" ry="2" />
+<text  x="865.22" y="639.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (1 samples, 1.39%)</title><rect x="223.1" y="373" width="16.3" height="15.0" fill="rgb(224,89,44)" rx="2" ry="2" />
+<text  x="226.06" y="383.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.writeBytes (1 samples, 1.39%)</title><rect x="173.9" y="133" width="16.4" height="15.0" fill="rgb(247,54,42)" rx="2" ry="2" />
+<text  x="176.89" y="143.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractArchiveResourceSet.getResource (1 samples, 1.39%)</title><rect x="862.2" y="533" width="16.4" height="15.0" fill="rgb(218,127,3)" rx="2" ry="2" />
+<text  x="865.22" y="543.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/CloseableHttpClient.execute (1 samples, 1.39%)</title><rect x="960.6" y="709" width="16.3" height="15.0" fill="rgb(230,167,27)" rx="2" ry="2" />
+<text  x="963.56" y="719.5" ></text>
+</g>
+<g >
+<title>com/jd/framework/magicbox/tomcat/classloader/MagicBoxParallelWebappClassLoader.getResourceAsStream (1 samples, 1.39%)</title><rect x="862.2" y="645" width="16.4" height="15.0" fill="rgb(218,160,5)" rx="2" ry="2" />
+<text  x="865.22" y="655.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (1 samples, 1.39%)</title><rect x="239.4" y="517" width="16.4" height="15.0" fill="rgb(207,119,53)" rx="2" ry="2" />
+<text  x="242.44" y="527.5" ></text>
+</g>
+<g >
+<title>java_start(Thread*) (8 samples, 11.11%)</title><rect x="1058.9" y="885" width="131.1" height="15.0" fill="rgb(227,53,23)" rx="2" ry="2" />
+<text  x="1061.89" y="895.5" >java_start(Threa..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$ConditionObject.awaitNanos (5 samples, 6.94%)</title><rect x="272.2" y="837" width="82.0" height="15.0" fill="rgb(206,44,39)" rx="2" ry="2" />
+<text  x="275.22" y="847.5" >java/util..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/TracingSpanContext.tag (1 samples, 1.39%)</title><rect x="960.6" y="629" width="16.3" height="15.0" fill="rgb(215,194,23)" rx="2" ry="2" />
+<text  x="963.56" y="639.5" ></text>
+</g>
+<g >
+<title>jni_GetObjectField (1 samples, 1.39%)</title><rect x="223.1" y="229" width="16.3" height="15.0" fill="rgb(207,160,29)" rx="2" ry="2" />
+<text  x="226.06" y="239.5" ></text>
+</g>
+<g >
+<title>io/netty/util/internal/ThreadExecutorMap$2.run (3 samples, 4.17%)</title><rect x="698.3" y="885" width="49.2" height="15.0" fill="rgb(208,21,24)" rx="2" ry="2" />
+<text  x="701.33" y="895.5" >io/n..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteObject (1 samples, 1.39%)</title><rect x="173.9" y="197" width="16.4" height="15.0" fill="rgb(211,43,38)" rx="2" ry="2" />
+<text  x="176.89" y="207.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/client/ConnectionHolder.sendHeartbeat (4 samples, 5.56%)</title><rect x="763.9" y="757" width="65.5" height="15.0" fill="rgb(221,20,0)" rx="2" ry="2" />
+<text  x="766.89" y="767.5" >com/jd/..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$ConditionObject.checkInterruptWhileWaiting (1 samples, 1.39%)</title><rect x="272.2" y="821" width="16.4" height="15.0" fill="rgb(235,123,12)" rx="2" ry="2" />
+<text  x="275.22" y="831.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap$HashIterator.&lt;init&gt; (1 samples, 1.39%)</title><rect x="714.7" y="677" width="16.4" height="15.0" fill="rgb(246,229,50)" rx="2" ry="2" />
+<text  x="717.72" y="687.5" ></text>
+</g>
+<g >
+<title>JavaThread::thread_main_inner() (3 samples, 4.17%)</title><rect x="1091.7" y="853" width="49.1" height="15.0" fill="rgb(218,194,24)" rx="2" ry="2" />
+<text  x="1094.67" y="863.5" >Java..</text>
+</g>
+<g >
+<title>com/mchange/v2/resourcepool/BasicResourcePool.doAcquire (1 samples, 1.39%)</title><rect x="59.2" y="837" width="16.4" height="15.0" fill="rgb(254,103,54)" rx="2" ry="2" />
+<text  x="62.17" y="847.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectStreamClass.invokeWriteObject (7 samples, 9.72%)</title><rect x="141.1" y="693" width="114.7" height="15.0" fill="rgb(206,133,22)" rx="2" ry="2" />
+<text  x="144.11" y="703.5" >java/io/Object..</text>
+</g>
+<g >
+<title>java/util/concurrent/LinkedBlockingDeque.poll (6 samples, 8.33%)</title><rect x="272.2" y="869" width="98.4" height="15.0" fill="rgb(222,102,23)" rx="2" ry="2" />
+<text  x="275.22" y="879.5" >java/util/c..</text>
+</g>
+<g >
+<title>java/lang/Object.wait (1 samples, 1.39%)</title><rect x="1042.5" y="885" width="16.4" height="15.0" fill="rgb(213,154,3)" rx="2" ry="2" />
+<text  x="1045.50" y="895.5" ></text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HeartbeatUtil.report (1 samples, 1.39%)</title><rect x="862.2" y="773" width="16.4" height="15.0" fill="rgb(219,61,31)" rx="2" ry="2" />
+<text  x="865.22" y="783.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.doBeforeNodeFinish (1 samples, 1.39%)</title><rect x="780.3" y="565" width="16.4" height="15.0" fill="rgb(219,15,37)" rx="2" ry="2" />
+<text  x="783.28" y="575.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.select (1 samples, 1.39%)</title><rect x="714.7" y="837" width="16.4" height="15.0" fill="rgb(238,49,45)" rx="2" ry="2" />
+<text  x="717.72" y="847.5" ></text>
+</g>
+<g >
+<title>Deoptimization::fetch_unroll_info_helper(JavaThread*) (1 samples, 1.39%)</title><rect x="10.0" y="869" width="16.4" height="15.0" fill="rgb(252,169,33)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/FutureTask.runAndReset (13 samples, 18.06%)</title><rect x="763.9" y="821" width="213.0" height="15.0" fill="rgb(223,5,6)" rx="2" ry="2" />
+<text  x="766.89" y="831.5" >java/util/concurrent/FutureT..</text>
+</g>
+<g >
+<title>com/wangyin/schedule/httpclient/SimpleHttpClient.getResponse (2 samples, 2.78%)</title><rect x="829.4" y="677" width="32.8" height="15.0" fill="rgb(218,74,41)" rx="2" ry="2" />
+<text  x="832.44" y="687.5" >co..</text>
+</g>
+<g >
+<title>sun/reflect/GeneratedMethodAccessor12.invoke (3 samples, 4.17%)</title><rect x="173.9" y="437" width="49.2" height="15.0" fill="rgb(240,104,44)" rx="2" ry="2" />
+<text  x="176.89" y="447.5" >sun/..</text>
+</g>
+<g >
+<title>start_thread (8 samples, 11.11%)</title><rect x="1058.9" y="901" width="131.1" height="15.0" fill="rgb(250,226,23)" rx="2" ry="2" />
+<text  x="1061.89" y="911.5" >start_thread</text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HeartbeatUtil.report2PolicyServer (1 samples, 1.39%)</title><rect x="862.2" y="757" width="16.4" height="15.0" fill="rgb(237,80,17)" rx="2" ry="2" />
+<text  x="865.22" y="767.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.drain (1 samples, 1.39%)</title><rect x="190.3" y="149" width="16.4" height="15.0" fill="rgb(235,135,40)" rx="2" ry="2" />
+<text  x="193.28" y="159.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteFields (2 samples, 2.78%)</title><rect x="141.1" y="485" width="32.8" height="15.0" fill="rgb(251,40,5)" rx="2" ry="2" />
+<text  x="144.11" y="495.5" >ja..</text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager.save (7 samples, 9.72%)</title><rect x="141.1" y="773" width="114.7" height="15.0" fill="rgb(242,27,17)" rx="2" ry="2" />
+<text  x="144.11" y="783.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.fireChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="709" width="16.4" height="15.0" fill="rgb(254,48,42)" rx="2" ry="2" />
+<text  x="701.33" y="719.5" ></text>
+</g>
+<g >
+<title>java/lang/String.substring (1 samples, 1.39%)</title><rect x="944.2" y="581" width="16.4" height="15.0" fill="rgb(224,59,53)" rx="2" ry="2" />
+<text  x="947.17" y="591.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeFlush0 (4 samples, 5.56%)</title><rect x="632.8" y="725" width="65.5" height="15.0" fill="rgb(216,223,0)" rx="2" ry="2" />
+<text  x="635.78" y="735.5" >io/nett..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.doAfterNodeBegin (1 samples, 1.39%)</title><rect x="763.9" y="549" width="16.4" height="15.0" fill="rgb(229,68,29)" rx="2" ry="2" />
+<text  x="766.89" y="559.5" ></text>
+</g>
+<g >
+<title>java/lang/String.equalsIgnoreCase (1 samples, 1.39%)</title><rect x="829.4" y="613" width="16.4" height="15.0" fill="rgb(215,34,16)" rx="2" ry="2" />
+<text  x="832.44" y="623.5" ></text>
+</g>
+<g >
+<title>java/lang/Thread.isInterrupted (1 samples, 1.39%)</title><rect x="632.8" y="581" width="16.4" height="15.0" fill="rgb(206,50,6)" rx="2" ry="2" />
+<text  x="635.78" y="591.5" ></text>
+</g>
+<g >
+<title>com/jd/component/donglog/log/LogUtils.executeWithLogMDC (1 samples, 1.39%)</title><rect x="813.1" y="613" width="16.3" height="15.0" fill="rgb(215,206,33)" rx="2" ry="2" />
+<text  x="816.06" y="623.5" ></text>
+</g>
+<g >
+<title>java/util/Calendar.setTimeInMillis (1 samples, 1.39%)</title><rect x="59.2" y="597" width="16.4" height="15.0" fill="rgb(242,152,7)" rx="2" ry="2" />
+<text  x="62.17" y="607.5" ></text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.open (4 samples, 5.56%)</title><rect x="878.6" y="341" width="65.6" height="15.0" fill="rgb(218,32,14)" rx="2" ry="2" />
+<text  x="881.61" y="351.5" >java/ut..</text>
+</g>
+<g >
+<title>com/mchange/v2/async/ThreadPoolAsynchronousRunner$PoolThread.run (1 samples, 1.39%)</title><rect x="59.2" y="901" width="16.4" height="15.0" fill="rgb(225,170,14)" rx="2" ry="2" />
+<text  x="62.17" y="911.5" ></text>
+</g>
+<g >
+<title>sun/net/www/protocol/http/HttpURLConnection.getInputStream0 (1 samples, 1.39%)</title><rect x="845.8" y="629" width="16.4" height="15.0" fill="rgb(246,163,48)" rx="2" ry="2" />
+<text  x="848.83" y="639.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.processSelectedKeysOptimized (1 samples, 1.39%)</title><rect x="698.3" y="821" width="16.4" height="15.0" fill="rgb(251,100,4)" rx="2" ry="2" />
+<text  x="701.33" y="831.5" ></text>
+</g>
+<g >
+<title>java/nio/channels/spi/AbstractInterruptibleChannel.begin (1 samples, 1.39%)</title><rect x="632.8" y="597" width="16.4" height="15.0" fill="rgb(219,119,30)" rx="2" ry="2" />
+<text  x="635.78" y="607.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/DefaultChannelPipeline$HeadContext.flush (4 samples, 5.56%)</title><rect x="632.8" y="709" width="65.5" height="15.0" fill="rgb(230,223,6)" rx="2" ry="2" />
+<text  x="635.78" y="719.5" >io/nett..</text>
+</g>
+<g >
+<title>java/util/concurrent/ThreadPoolExecutor.runWorker (16 samples, 22.22%)</title><rect x="747.5" y="869" width="262.2" height="15.0" fill="rgb(229,183,51)" rx="2" ry="2" />
+<text  x="750.50" y="879.5" >java/util/concurrent/ThreadPoolExec..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject (3 samples, 4.17%)</title><rect x="173.9" y="405" width="49.2" height="15.0" fill="rgb(229,220,22)" rx="2" ry="2" />
+<text  x="176.89" y="415.5" >java..</text>
+</g>
+<g >
+<title>com/mchange/v2/c3p0/DriverManagerDataSource.getConnection (1 samples, 1.39%)</title><rect x="59.2" y="773" width="16.4" height="15.0" fill="rgb(219,12,19)" rx="2" ry="2" />
+<text  x="62.17" y="783.5" ></text>
+</g>
+<g >
+<title>writeBytes (1 samples, 1.39%)</title><rect x="223.1" y="245" width="16.3" height="15.0" fill="rgb(220,40,2)" rx="2" ry="2" />
+<text  x="226.06" y="255.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/SingleThreadEventExecutor.runAllTasks (5 samples, 6.94%)</title><rect x="616.4" y="853" width="81.9" height="15.0" fill="rgb(241,203,21)" rx="2" ry="2" />
+<text  x="619.39" y="863.5" >io/netty/..</text>
+</g>
+<g >
+<title>com/jd/pfinder/plugin/jsf1/codec/interceptor/Jsf1EncoderInterceptor.onMethodExit (1 samples, 1.39%)</title><rect x="780.3" y="645" width="16.4" height="15.0" fill="rgb(238,166,10)" rx="2" ry="2" />
+<text  x="783.28" y="655.5" ></text>
+</g>
+<g >
+<title>com/mchange/v2/c3p0/WrapperConnectionPoolDataSource.getPooledConnection (1 samples, 1.39%)</title><rect x="59.2" y="805" width="16.4" height="15.0" fill="rgb(245,118,19)" rx="2" ry="2" />
+<text  x="62.17" y="815.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/ext/delay/ReportPacketFileQueueCodec.decode (1 samples, 1.39%)</title><rect x="1026.1" y="821" width="16.4" height="15.0" fill="rgb(244,158,46)" rx="2" ry="2" />
+<text  x="1029.11" y="831.5" ></text>
+</g>
+<g >
+<title>java/lang/reflect/Constructor.newInstance (1 samples, 1.39%)</title><rect x="59.2" y="709" width="16.4" height="15.0" fill="rgb(223,142,44)" rx="2" ry="2" />
+<text  x="62.17" y="719.5" ></text>
+</g>
+<g >
+<title>VMThread::run() (3 samples, 4.17%)</title><rect x="1140.8" y="869" width="49.2" height="15.0" fill="rgb(215,87,43)" rx="2" ry="2" />
+<text  x="1143.83" y="879.5" >VMTh..</text>
+</g>
+<g >
+<title>_ZN21ThreadStateTransition22transition_from_nativeEP10JavaThread15JavaThreadState.constprop.64 (1 samples, 1.39%)</title><rect x="993.3" y="741" width="16.4" height="15.0" fill="rgb(213,210,50)" rx="2" ry="2" />
+<text  x="996.33" y="751.5" ></text>
+</g>
+<g >
+<title>Compiler::compile_method(ciEnv*, ciMethod*, int) (2 samples, 2.78%)</title><rect x="1091.7" y="805" width="32.7" height="15.0" fill="rgb(214,76,2)" rx="2" ry="2" />
+<text  x="1094.67" y="815.5" >Co..</text>
+</g>
+<g >
+<title>java/util/concurrent/FutureTask.run (1 samples, 1.39%)</title><rect x="747.5" y="821" width="16.4" height="15.0" fill="rgb(238,83,40)" rx="2" ry="2" />
+<text  x="750.50" y="831.5" ></text>
+</g>
+<g >
+<title>com/jd/ump/profiler/util/MessagesStore$LogHandle.run (1 samples, 1.39%)</title><rect x="370.6" y="885" width="16.3" height="15.0" fill="rgb(235,182,0)" rx="2" ry="2" />
+<text  x="373.56" y="895.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannel$AbstractUnsafe.flush0 (4 samples, 5.56%)</title><rect x="632.8" y="645" width="65.5" height="15.0" fill="rgb(234,106,39)" rx="2" ry="2" />
+<text  x="635.78" y="655.5" >io/nett..</text>
+</g>
+<g >
+<title>sun/reflect/DelegatingMethodAccessorImpl.invoke (4 samples, 5.56%)</title><rect x="173.9" y="453" width="65.5" height="15.0" fill="rgb(233,175,35)" rx="2" ry="2" />
+<text  x="176.89" y="463.5" >sun/ref..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getResourceInternal (4 samples, 5.56%)</title><rect x="878.6" y="501" width="65.6" height="15.0" fill="rgb(247,211,10)" rx="2" ry="2" />
+<text  x="881.61" y="511.5" >org/apa..</text>
+</g>
+<g >
+<title>com/jd/registry/util/EventManager$EventDispatcher.isAlive (1 samples, 1.39%)</title><rect x="255.8" y="869" width="16.4" height="15.0" fill="rgb(245,13,51)" rx="2" ry="2" />
+<text  x="258.83" y="879.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/ext/fq/FileQueue.read (1 samples, 1.39%)</title><rect x="1026.1" y="853" width="16.4" height="15.0" fill="rgb(222,112,20)" rx="2" ry="2" />
+<text  x="1029.11" y="863.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.write (1 samples, 1.39%)</title><rect x="206.7" y="101" width="16.4" height="15.0" fill="rgb(232,228,54)" rx="2" ry="2" />
+<text  x="209.67" y="111.5" ></text>
+</g>
+<g >
+<title>java/lang/Thread.sleep (4 samples, 5.56%)</title><rect x="75.6" y="853" width="65.5" height="15.0" fill="rgb(219,181,50)" rx="2" ry="2" />
+<text  x="78.56" y="863.5" >java/la..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeFlush (4 samples, 5.56%)</title><rect x="632.8" y="741" width="65.5" height="15.0" fill="rgb(253,211,47)" rx="2" ry="2" />
+<text  x="635.78" y="751.5" >io/nett..</text>
+</g>
+<g >
+<title>LinearScan::assign_reg_num() (1 samples, 1.39%)</title><rect x="1091.7" y="709" width="16.4" height="15.0" fill="rgb(211,13,1)" rx="2" ry="2" />
+<text  x="1094.67" y="719.5" ></text>
+</g>
+<g >
+<title>sun/net/www/protocol/http/HttpURLConnection.getHeaderFields (2 samples, 2.78%)</title><rect x="829.4" y="661" width="32.8" height="15.0" fill="rgb(219,119,9)" rx="2" ry="2" />
+<text  x="832.44" y="671.5" >su..</text>
+</g>
+<g >
+<title>NullCheckEliminator::iterate_one(BlockBegin*) (1 samples, 1.39%)</title><rect x="1108.1" y="693" width="16.3" height="15.0" fill="rgb(234,152,48)" rx="2" ry="2" />
+<text  x="1111.06" y="703.5" ></text>
+</g>
+<g >
+<title>__GI_memset (1 samples, 1.39%)</title><rect x="1026.1" y="693" width="16.4" height="15.0" fill="rgb(244,175,8)" rx="2" ry="2" />
+<text  x="1029.11" y="703.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeHandler (1 samples, 1.39%)</title><rect x="616.4" y="757" width="16.4" height="15.0" fill="rgb(252,137,27)" rx="2" ry="2" />
+<text  x="619.39" y="767.5" ></text>
+</g>
+<g >
+<title>sun/reflect/DelegatingMethodAccessorImpl.invoke (3 samples, 4.17%)</title><rect x="173.9" y="245" width="49.2" height="15.0" fill="rgb(228,1,48)" rx="2" ry="2" />
+<text  x="176.89" y="255.5" >sun/..</text>
+</g>
+<g >
+<title>Java_java_io_FileOutputStream_writeBytes (1 samples, 1.39%)</title><rect x="223.1" y="261" width="16.3" height="15.0" fill="rgb(237,38,32)" rx="2" ry="2" />
+<text  x="226.06" y="271.5" ></text>
+</g>
+<g >
+<title>javax/xml/bind/ContextFinder.find (4 samples, 5.56%)</title><rect x="878.6" y="661" width="65.6" height="15.0" fill="rgb(206,116,1)" rx="2" ry="2" />
+<text  x="881.61" y="671.5" >javax/x..</text>
+</g>
+<g >
+<title>vframeArray::allocate(JavaThread*, int, GrowableArray&lt;compiledVFrame*&gt;*, RegisterMap*, frame, frame, frame, bool) (1 samples, 1.39%)</title><rect x="10.0" y="853" width="16.4" height="15.0" fill="rgb(230,9,47)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.write (2 samples, 2.78%)</title><rect x="141.1" y="453" width="32.8" height="15.0" fill="rgb(206,51,31)" rx="2" ry="2" />
+<text  x="144.11" y="463.5" >ja..</text>
+</g>
+<g >
+<title>org/slf4j/MDC.put (1 samples, 1.39%)</title><rect x="763.9" y="517" width="16.4" height="15.0" fill="rgb(224,11,45)" rx="2" ry="2" />
+<text  x="766.89" y="527.5" ></text>
+</g>
+<g >
+<title>java/util/ArrayList.writeObject (3 samples, 4.17%)</title><rect x="173.9" y="421" width="49.2" height="15.0" fill="rgb(254,222,27)" rx="2" ry="2" />
+<text  x="176.89" y="431.5" >java..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.drain (1 samples, 1.39%)</title><rect x="223.1" y="309" width="16.3" height="15.0" fill="rgb(244,166,52)" rx="2" ry="2" />
+<text  x="226.06" y="319.5" ></text>
+</g>
+<g >
+<title>org/apache/hadoop/hbase/client/policy/impl/HttpPolicyClient.getConnectionInfo (6 samples, 8.33%)</title><rect x="878.6" y="773" width="98.3" height="15.0" fill="rgb(212,30,16)" rx="2" ry="2" />
+<text  x="881.61" y="783.5" >org/apache/..</text>
+</g>
+<g >
+<title>java/util/jar/JarFile.&lt;init&gt; (4 samples, 5.56%)</title><rect x="878.6" y="405" width="65.6" height="15.0" fill="rgb(224,134,41)" rx="2" ry="2" />
+<text  x="881.61" y="415.5" >java/ut..</text>
+</g>
+<g >
+<title>java/lang/Thread.sleep (11 samples, 15.28%)</title><rect x="403.3" y="853" width="180.3" height="15.0" fill="rgb(249,123,16)" rx="2" ry="2" />
+<text  x="406.33" y="863.5" >java/lang/Thread.sleep</text>
+</g>
+<g >
+<title>sun/nio/ch/SocketChannelImpl.write (4 samples, 5.56%)</title><rect x="632.8" y="613" width="65.5" height="15.0" fill="rgb(210,229,23)" rx="2" ry="2" />
+<text  x="635.78" y="623.5" >sun/nio..</text>
+</g>
+<g >
+<title>java/lang/Character.toUpperCase (1 samples, 1.39%)</title><rect x="829.4" y="565" width="16.4" height="15.0" fill="rgb(250,16,20)" rx="2" ry="2" />
+<text  x="832.44" y="575.5" ></text>
+</g>
+<g >
+<title>com/wangyin/schedule/client/dao/http/HttpGetJobDaoImpl.getJobs (2 samples, 2.78%)</title><rect x="829.4" y="773" width="32.8" height="15.0" fill="rgb(239,61,11)" rx="2" ry="2" />
+<text  x="832.44" y="783.5" >co..</text>
+</g>
+<g >
+<title>org/apache/http/impl/client/DefaultHttpClient.createHttpParams (1 samples, 1.39%)</title><rect x="944.2" y="693" width="16.4" height="15.0" fill="rgb(233,128,42)" rx="2" ry="2" />
+<text  x="947.17" y="703.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (6 samples, 8.33%)</title><rect x="141.1" y="517" width="98.3" height="15.0" fill="rgb(247,63,41)" rx="2" ry="2" />
+<text  x="144.11" y="527.5" >java/io/Obj..</text>
+</g>
+<g >
+<title>OtherRegionsTable::occupied() const (1 samples, 1.39%)</title><rect x="1075.3" y="821" width="16.4" height="15.0" fill="rgb(241,199,18)" rx="2" ry="2" />
+<text  x="1078.28" y="831.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/codec/ByteToMessageDecoder.callDecode (1 samples, 1.39%)</title><rect x="698.3" y="645" width="16.4" height="15.0" fill="rgb(207,67,4)" rx="2" ry="2" />
+<text  x="701.33" y="655.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask.run (15 samples, 20.83%)</title><rect x="747.5" y="853" width="245.8" height="15.0" fill="rgb(212,68,17)" rx="2" ry="2" />
+<text  x="750.50" y="863.5" >java/util/concurrent/ScheduledTh..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractArchiveResourceSet.openJarFile (1 samples, 1.39%)</title><rect x="862.2" y="501" width="16.4" height="15.0" fill="rgb(254,25,25)" rx="2" ry="2" />
+<text  x="865.22" y="511.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/loader/WebappClassLoaderBase.findResource (4 samples, 5.56%)</title><rect x="878.6" y="581" width="65.6" height="15.0" fill="rgb(239,63,53)" rx="2" ry="2" />
+<text  x="881.61" y="591.5" >org/apa..</text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/AbstractTCPClientTransport.sendAsyn (2 samples, 2.78%)</title><rect x="763.9" y="693" width="32.8" height="15.0" fill="rgb(215,222,33)" rx="2" ry="2" />
+<text  x="766.89" y="703.5" >co..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractSingleArchiveResourceSet.getArchiveEntry (4 samples, 5.56%)</title><rect x="878.6" y="469" width="65.6" height="15.0" fill="rgb(233,95,20)" rx="2" ry="2" />
+<text  x="881.61" y="479.5" >org/apa..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getResourceInternal (1 samples, 1.39%)</title><rect x="862.2" y="549" width="16.4" height="15.0" fill="rgb(212,68,31)" rx="2" ry="2" />
+<text  x="865.22" y="559.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/ext/delay/FileQueueReportChannel$1.run (1 samples, 1.39%)</title><rect x="1026.1" y="869" width="16.4" height="15.0" fill="rgb(216,73,37)" rx="2" ry="2" />
+<text  x="1029.11" y="879.5" ></text>
+</g>
+<g >
+<title>__pthread_cond_timedwait (3 samples, 4.17%)</title><rect x="91.9" y="805" width="49.2" height="15.0" fill="rgb(215,191,29)" rx="2" ry="2" />
+<text  x="94.94" y="815.5" >__pt..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.compareAndSetWaitStatus (1 samples, 1.39%)</title><rect x="731.1" y="517" width="16.4" height="15.0" fill="rgb(246,199,42)" rx="2" ry="2" />
+<text  x="734.11" y="527.5" ></text>
+</g>
+<g >
+<title>java/util/jar/JarFile.&lt;init&gt; (1 samples, 1.39%)</title><rect x="862.2" y="453" width="16.4" height="15.0" fill="rgb(232,174,12)" rx="2" ry="2" />
+<text  x="865.22" y="463.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.transferForSignal (1 samples, 1.39%)</title><rect x="731.1" y="533" width="16.4" height="15.0" fill="rgb(254,95,27)" rx="2" ry="2" />
+<text  x="734.11" y="543.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 1.39%)</title><rect x="534.4" y="837" width="16.4" height="15.0" fill="rgb(218,46,33)" rx="2" ry="2" />
+<text  x="537.44" y="847.5" ></text>
+</g>
+<g >
+<title>Compilation::Compilation(AbstractCompiler*, ciEnv*, ciMethod*, int, BufferBlob*) (2 samples, 2.78%)</title><rect x="1091.7" y="789" width="32.7" height="15.0" fill="rgb(211,77,48)" rx="2" ry="2" />
+<text  x="1094.67" y="799.5" >Co..</text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/JSFClientTransport.sendHeartbeat (2 samples, 2.78%)</title><rect x="763.9" y="725" width="32.8" height="15.0" fill="rgb(252,83,9)" rx="2" ry="2" />
+<text  x="766.89" y="735.5" >co..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractArchiveResourceSet.openJarFile (4 samples, 5.56%)</title><rect x="878.6" y="453" width="65.6" height="15.0" fill="rgb(238,190,28)" rx="2" ry="2" />
+<text  x="881.61" y="463.5" >org/apa..</text>
+</g>
+<g >
+<title>CompileBroker::invoke_compiler_on_method(CompileTask*) (2 samples, 2.78%)</title><rect x="1091.7" y="821" width="32.7" height="15.0" fill="rgb(249,8,10)" rx="2" ry="2" />
+<text  x="1094.67" y="831.5" >Co..</text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.run (7 samples, 9.72%)</title><rect x="583.6" y="869" width="114.7" height="15.0" fill="rgb(226,120,20)" rx="2" ry="2" />
+<text  x="586.61" y="879.5" >io/netty/chann..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/TracingSpanContext.tag (1 samples, 1.39%)</title><rect x="960.6" y="597" width="16.3" height="15.0" fill="rgb(246,224,21)" rx="2" ry="2" />
+<text  x="963.56" y="607.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/plugin/apache/httpclient/v4/HttpClientExecuteInterceptor.onMethodExit (1 samples, 1.39%)</title><rect x="960.6" y="645" width="16.3" height="15.0" fill="rgb(246,162,54)" rx="2" ry="2" />
+<text  x="963.56" y="655.5" ></text>
+</g>
+<g >
+<title>com/jd/jmq/client/consumer/GroupConsumer$QueueConsumer.sleep (4 samples, 5.56%)</title><rect x="75.6" y="869" width="65.5" height="15.0" fill="rgb(234,28,13)" rx="2" ry="2" />
+<text  x="78.56" y="879.5" >com/jd/..</text>
+</g>
+<g >
+<title>io/netty/util/concurrent/PromiseTask$RunnableAdapter.call (4 samples, 5.56%)</title><rect x="632.8" y="805" width="65.5" height="15.0" fill="rgb(232,195,51)" rx="2" ry="2" />
+<text  x="635.78" y="815.5" >io/nett..</text>
+</g>
+<g >
+<title>Optimizer::eliminate_null_checks() (1 samples, 1.39%)</title><rect x="1108.1" y="709" width="16.3" height="15.0" fill="rgb(231,213,38)" rx="2" ry="2" />
+<text  x="1111.06" y="719.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/CachedResource.validateResource (1 samples, 1.39%)</title><rect x="862.2" y="565" width="16.4" height="15.0" fill="rgb(223,112,22)" rx="2" ry="2" />
+<text  x="865.22" y="575.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$Node.&lt;init&gt; (1 samples, 1.39%)</title><rect x="354.2" y="773" width="16.4" height="15.0" fill="rgb(217,126,23)" rx="2" ry="2" />
+<text  x="357.17" y="783.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.select (1 samples, 1.39%)</title><rect x="714.7" y="805" width="16.4" height="15.0" fill="rgb(220,189,42)" rx="2" ry="2" />
+<text  x="717.72" y="815.5" ></text>
+</g>
+<g >
+<title>io/netty/util/HashedWheelTimer$Worker.run (12 samples, 16.67%)</title><rect x="386.9" y="885" width="196.7" height="15.0" fill="rgb(241,182,1)" rx="2" ry="2" />
+<text  x="389.94" y="895.5" >io/netty/util/HashedWheel..</text>
+</g>
+<g >
+<title>[deoptimization] (2 samples, 2.78%)</title><rect x="10.0" y="901" width="32.8" height="15.0" fill="rgb(205,149,37)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >[d..</text>
+</g>
+<g >
+<title>com/mchange/v2/c3p0/WrapperConnectionPoolDataSource.getPooledConnection (1 samples, 1.39%)</title><rect x="59.2" y="789" width="16.4" height="15.0" fill="rgb(217,46,11)" rx="2" ry="2" />
+<text  x="62.17" y="799.5" ></text>
+</g>
+<g >
+<title>sun/reflect/DelegatingMethodAccessorImpl.invoke (7 samples, 9.72%)</title><rect x="141.1" y="661" width="114.7" height="15.0" fill="rgb(216,189,34)" rx="2" ry="2" />
+<text  x="144.11" y="671.5" >sun/reflect/De..</text>
+</g>
+<g >
+<title>java/util/ArrayList.writeObject (3 samples, 4.17%)</title><rect x="173.9" y="213" width="49.2" height="15.0" fill="rgb(205,42,26)" rx="2" ry="2" />
+<text  x="176.89" y="223.5" >java..</text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue.take (1 samples, 1.39%)</title><rect x="993.3" y="837" width="16.4" height="15.0" fill="rgb(205,22,33)" rx="2" ry="2" />
+<text  x="996.33" y="847.5" ></text>
+</g>
+<g >
+<title>org/apache/tomcat/util/compat/JreCompat.jarFileNewInstance (1 samples, 1.39%)</title><rect x="862.2" y="485" width="16.4" height="15.0" fill="rgb(251,29,37)" rx="2" ry="2" />
+<text  x="865.22" y="495.5" ></text>
+</g>
+<g >
+<title>__write (1 samples, 1.39%)</title><rect x="190.3" y="69" width="16.4" height="15.0" fill="rgb(223,161,54)" rx="2" ry="2" />
+<text  x="193.28" y="79.5" ></text>
+</g>
+<g >
+<title>Monitor::lock_without_safepoint_check() (1 samples, 1.39%)</title><rect x="75.6" y="805" width="16.3" height="15.0" fill="rgb(243,131,4)" rx="2" ry="2" />
+<text  x="78.56" y="815.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (7 samples, 9.72%)</title><rect x="141.1" y="533" width="114.7" height="15.0" fill="rgb(226,118,22)" rx="2" ry="2" />
+<text  x="144.11" y="543.5" >java/io/Object..</text>
+</g>
+<g >
+<title>com/jd/jmq/common/network/command/GetClusterAck.decode (1 samples, 1.39%)</title><rect x="698.3" y="581" width="16.4" height="15.0" fill="rgb(219,119,3)" rx="2" ry="2" />
+<text  x="701.33" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/DefaultHttpClient.createHttpParams (1 samples, 1.39%)</title><rect x="862.2" y="709" width="16.4" height="15.0" fill="rgb(216,19,44)" rx="2" ry="2" />
+<text  x="865.22" y="719.5" ></text>
+</g>
+<g >
+<title>java/util/LinkedHashMap.internalWriteEntries (1 samples, 1.39%)</title><rect x="223.1" y="405" width="16.3" height="15.0" fill="rgb(249,17,20)" rx="2" ry="2" />
+<text  x="226.06" y="415.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeChannelRead (1 samples, 1.39%)</title><rect x="698.3" y="757" width="16.4" height="15.0" fill="rgb(224,44,47)" rx="2" ry="2" />
+<text  x="701.33" y="767.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob(void*) (1 samples, 1.39%)</title><rect x="747.5" y="597" width="16.4" height="15.0" fill="rgb(241,38,16)" rx="2" ry="2" />
+<text  x="750.50" y="607.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jLogger.lambda$debug$13 (1 samples, 1.39%)</title><rect x="813.1" y="581" width="16.3" height="15.0" fill="rgb(230,197,17)" rx="2" ry="2" />
+<text  x="816.06" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/AbstractHttpClient.getParams (1 samples, 1.39%)</title><rect x="944.2" y="709" width="16.4" height="15.0" fill="rgb(222,91,4)" rx="2" ry="2" />
+<text  x="947.17" y="719.5" ></text>
+</g>
+<g >
+<title>com/jd/traceholder/TraceHolder.isForcebot (1 samples, 1.39%)</title><rect x="813.1" y="677" width="16.3" height="15.0" fill="rgb(219,180,54)" rx="2" ry="2" />
+<text  x="816.06" y="687.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (1 samples, 1.39%)</title><rect x="206.7" y="149" width="16.4" height="15.0" fill="rgb(239,195,48)" rx="2" ry="2" />
+<text  x="209.67" y="159.5" ></text>
+</g>
+<g >
+<title>java/util/jar/JarFile.&lt;init&gt; (4 samples, 5.56%)</title><rect x="878.6" y="389" width="65.6" height="15.0" fill="rgb(219,167,34)" rx="2" ry="2" />
+<text  x="881.61" y="399.5" >java/ut..</text>
+</g>
+<g >
+<title>io/netty/channel/DefaultChannelPipeline$HeadContext.channelRead (1 samples, 1.39%)</title><rect x="698.3" y="725" width="16.4" height="15.0" fill="rgb(225,162,2)" rx="2" ry="2" />
+<text  x="701.33" y="735.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/SingleThreadEventExecutor.runAllTasks (1 samples, 1.39%)</title><rect x="731.1" y="837" width="16.4" height="15.0" fill="rgb(209,201,35)" rx="2" ry="2" />
+<text  x="734.11" y="847.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/LinkedBlockingDeque.linkLast (1 samples, 1.39%)</title><rect x="731.1" y="581" width="16.4" height="15.0" fill="rgb(228,18,0)" rx="2" ry="2" />
+<text  x="734.11" y="591.5" ></text>
+</g>
+<g >
+<title>java/lang/Thread.run (58 samples, 80.56%)</title><rect x="75.6" y="901" width="950.5" height="15.0" fill="rgb(234,105,50)" rx="2" ry="2" />
+<text  x="78.56" y="911.5" >java/lang/Thread.run</text>
+</g>
+<g >
+<title>sun/nio/ch/EPollSelectorImpl.doSelect (1 samples, 1.39%)</title><rect x="714.7" y="757" width="16.4" height="15.0" fill="rgb(215,144,41)" rx="2" ry="2" />
+<text  x="717.72" y="767.5" ></text>
+</g>
+<g >
+<title>Deoptimization::deoptimize(JavaThread*, frame, RegisterMap*) (1 samples, 1.39%)</title><rect x="845.8" y="565" width="16.4" height="15.0" fill="rgb(223,71,7)" rx="2" ry="2" />
+<text  x="848.83" y="575.5" ></text>
+</g>
+<g >
+<title>pfinder/shade/com/lmax/disruptor/BatchEventProcessor.processEvents (1 samples, 1.39%)</title><rect x="1009.7" y="869" width="16.4" height="15.0" fill="rgb(248,59,8)" rx="2" ry="2" />
+<text  x="1012.72" y="879.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/FileDispatcherImpl.writev0 (3 samples, 4.17%)</title><rect x="649.2" y="565" width="49.1" height="15.0" fill="rgb(215,90,52)" rx="2" ry="2" />
+<text  x="652.17" y="575.5" >sun/..</text>
+</g>
+<g >
+<title>java/util/GregorianCalendar.&lt;init&gt; (1 samples, 1.39%)</title><rect x="59.2" y="613" width="16.4" height="15.0" fill="rgb(210,220,4)" rx="2" ry="2" />
+<text  x="62.17" y="623.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/protocol/JSFProtocol.encode (2 samples, 2.78%)</title><rect x="763.9" y="661" width="32.8" height="15.0" fill="rgb(205,220,24)" rx="2" ry="2" />
+<text  x="766.89" y="671.5" >co..</text>
+</g>
+<g >
+<title>Java_java_io_FileOutputStream_writeBytes (2 samples, 2.78%)</title><rect x="141.1" y="421" width="32.8" height="15.0" fill="rgb(207,150,12)" rx="2" ry="2" />
+<text  x="144.11" y="431.5" >Ja..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeFlush (1 samples, 1.39%)</title><rect x="616.4" y="773" width="16.4" height="15.0" fill="rgb(235,56,48)" rx="2" ry="2" />
+<text  x="619.39" y="783.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ThreadPoolExecutor.getTask (1 samples, 1.39%)</title><rect x="993.3" y="853" width="16.4" height="15.0" fill="rgb(236,111,9)" rx="2" ry="2" />
+<text  x="996.33" y="863.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/plugin/jsf1/codec/interceptor/Jsf1EncoderInterceptor.onMethodEnter (1 samples, 1.39%)</title><rect x="763.9" y="645" width="16.4" height="15.0" fill="rgb(239,42,38)" rx="2" ry="2" />
+<text  x="766.89" y="655.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/log4j/core/Logger.isEnabled (1 samples, 1.39%)</title><rect x="813.1" y="549" width="16.3" height="15.0" fill="rgb(217,150,4)" rx="2" ry="2" />
+<text  x="816.06" y="559.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/Cache.getResource (1 samples, 1.39%)</title><rect x="862.2" y="581" width="16.4" height="15.0" fill="rgb(205,94,35)" rx="2" ry="2" />
+<text  x="865.22" y="591.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue.take (1 samples, 1.39%)</title><rect x="993.3" y="821" width="16.4" height="15.0" fill="rgb(246,177,1)" rx="2" ry="2" />
+<text  x="996.33" y="831.5" ></text>
+</g>
+<g >
+<title>writeBytes (1 samples, 1.39%)</title><rect x="173.9" y="101" width="16.4" height="15.0" fill="rgb(243,168,39)" rx="2" ry="2" />
+<text  x="176.89" y="111.5" ></text>
+</g>
+<g >
+<title>itable stub (1 samples, 1.39%)</title><rect x="616.4" y="741" width="16.4" height="15.0" fill="rgb(223,36,35)" rx="2" ry="2" />
+<text  x="619.39" y="751.5" ></text>
+</g>
+<g >
+<title>os::sleep(Thread*, long, bool) (7 samples, 9.72%)</title><rect x="403.3" y="821" width="114.8" height="15.0" fill="rgb(219,52,16)" rx="2" ry="2" />
+<text  x="406.33" y="831.5" >os::sleep(Thre..</text>
+</g>
+<g >
+<title>com/jd/jmq/common/network/netty/NettyTransport$ConnectionHandler.userEventTriggered (1 samples, 1.39%)</title><rect x="731.1" y="661" width="16.4" height="15.0" fill="rgb(254,149,34)" rx="2" ry="2" />
+<text  x="734.11" y="671.5" ></text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HttpClientUtil.doGet (6 samples, 8.33%)</title><rect x="878.6" y="725" width="98.3" height="15.0" fill="rgb(226,194,46)" rx="2" ry="2" />
+<text  x="881.61" y="735.5" >com/jd/bdp/..</text>
+</g>
+<g >
+<title>CodeHeap::find_start(void*) const (1 samples, 1.39%)</title><rect x="747.5" y="581" width="16.4" height="15.0" fill="rgb(229,44,2)" rx="2" ry="2" />
+<text  x="750.50" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/log4j/spi/DefaultThreadContextMap.remove (1 samples, 1.39%)</title><rect x="780.3" y="485" width="16.4" height="15.0" fill="rgb(237,97,12)" rx="2" ry="2" />
+<text  x="783.28" y="495.5" ></text>
+</g>
+<g >
+<title>java/lang/reflect/Method.invoke (3 samples, 4.17%)</title><rect x="173.9" y="261" width="49.2" height="15.0" fill="rgb(251,203,37)" rx="2" ry="2" />
+<text  x="176.89" y="271.5" >java..</text>
+</g>
+<g >
+<title>java/io/ObjectStreamClass.invokeWriteObject (3 samples, 4.17%)</title><rect x="173.9" y="277" width="49.2" height="15.0" fill="rgb(246,28,20)" rx="2" ry="2" />
+<text  x="176.89" y="287.5" >java..</text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.select (1 samples, 1.39%)</title><rect x="714.7" y="789" width="16.4" height="15.0" fill="rgb(212,8,16)" rx="2" ry="2" />
+<text  x="717.72" y="799.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getClassLoaderResource (4 samples, 5.56%)</title><rect x="878.6" y="565" width="65.6" height="15.0" fill="rgb(213,35,50)" rx="2" ry="2" />
+<text  x="881.61" y="575.5" >org/apa..</text>
+</g>
+<g >
+<title>com/jd/component/donglog/log/LogUtils.executeWithLogMDC (1 samples, 1.39%)</title><rect x="813.1" y="709" width="16.3" height="15.0" fill="rgb(239,143,9)" rx="2" ry="2" />
+<text  x="816.06" y="719.5" ></text>
+</g>
+<g >
+<title>NMethodSweeper::possibly_sweep() (1 samples, 1.39%)</title><rect x="1124.4" y="805" width="16.4" height="15.0" fill="rgb(219,166,8)" rx="2" ry="2" />
+<text  x="1127.44" y="815.5" ></text>
+</g>
+<g >
+<title>__write (1 samples, 1.39%)</title><rect x="206.7" y="37" width="16.4" height="15.0" fill="rgb(247,103,32)" rx="2" ry="2" />
+<text  x="209.67" y="47.5" ></text>
+</g>
+<g >
+<title>java/io/FileOutputStream.write (1 samples, 1.39%)</title><rect x="173.9" y="149" width="16.4" height="15.0" fill="rgb(250,4,54)" rx="2" ry="2" />
+<text  x="176.89" y="159.5" ></text>
+</g>
+<g >
+<title>java_lang_Throwable::fill_in_stack_trace(Handle, methodHandle) (1 samples, 1.39%)</title><rect x="747.5" y="629" width="16.4" height="15.0" fill="rgb(232,100,51)" rx="2" ry="2" />
+<text  x="750.50" y="639.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jMDCAdapter.put (1 samples, 1.39%)</title><rect x="763.9" y="501" width="16.4" height="15.0" fill="rgb(206,101,7)" rx="2" ry="2" />
+<text  x="766.89" y="511.5" ></text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.&lt;init&gt; (4 samples, 5.56%)</title><rect x="878.6" y="357" width="65.6" height="15.0" fill="rgb(238,193,40)" rx="2" ry="2" />
+<text  x="881.61" y="367.5" >java/ut..</text>
+</g>
+<g >
+<title>java/util/HashSet.iterator (1 samples, 1.39%)</title><rect x="714.7" y="725" width="16.4" height="15.0" fill="rgb(219,99,54)" rx="2" ry="2" />
+<text  x="717.72" y="735.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap.resize (1 samples, 1.39%)</title><rect x="763.9" y="421" width="16.4" height="15.0" fill="rgb(253,93,45)" rx="2" ry="2" />
+<text  x="766.89" y="431.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/log4j/spi/DefaultThreadContextMap.put (1 samples, 1.39%)</title><rect x="763.9" y="469" width="16.4" height="15.0" fill="rgb(252,217,7)" rx="2" ry="2" />
+<text  x="766.89" y="479.5" ></text>
+</g>
+<g >
+<title>io/netty/handler/timeout/IdleStateHandler$AbstractIdleTask.run (1 samples, 1.39%)</title><rect x="731.1" y="757" width="16.4" height="15.0" fill="rgb(219,88,42)" rx="2" ry="2" />
+<text  x="734.11" y="767.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.processSelectedKey (1 samples, 1.39%)</title><rect x="698.3" y="805" width="16.4" height="15.0" fill="rgb(241,168,42)" rx="2" ry="2" />
+<text  x="701.33" y="815.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/LinkedBlockingDeque.putLast (1 samples, 1.39%)</title><rect x="731.1" y="597" width="16.4" height="15.0" fill="rgb(237,64,14)" rx="2" ry="2" />
+<text  x="734.11" y="607.5" ></text>
+</g>
+<g >
+<title>org/apache/logging/log4j/core/Logger$PrivateConfig.filter (1 samples, 1.39%)</title><rect x="813.1" y="533" width="16.3" height="15.0" fill="rgb(234,36,37)" rx="2" ry="2" />
+<text  x="816.06" y="543.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.lockAndDoSelect (2 samples, 2.78%)</title><rect x="583.6" y="805" width="32.8" height="15.0" fill="rgb(206,194,49)" rx="2" ry="2" />
+<text  x="586.61" y="815.5" >su..</text>
+</g>
+<g >
+<title>java/util/HashMap.putVal (1 samples, 1.39%)</title><rect x="763.9" y="437" width="16.4" height="15.0" fill="rgb(235,84,40)" rx="2" ry="2" />
+<text  x="766.89" y="447.5" ></text>
+</g>
+<g >
+<title>__libc_writev (3 samples, 4.17%)</title><rect x="649.2" y="549" width="49.1" height="15.0" fill="rgb(238,207,27)" rx="2" ry="2" />
+<text  x="652.17" y="559.5" >__li..</text>
+</g>
+<g >
+<title>__lll_unlock_wake (1 samples, 1.39%)</title><rect x="403.3" y="805" width="16.4" height="15.0" fill="rgb(216,37,39)" rx="2" ry="2" />
+<text  x="406.33" y="815.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap$KeyIterator.&lt;init&gt; (1 samples, 1.39%)</title><rect x="714.7" y="693" width="16.4" height="15.0" fill="rgb(250,87,1)" rx="2" ry="2" />
+<text  x="717.72" y="703.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201 (1 samples, 1.39%)</title><rect x="747.5" y="837" width="16.4" height="15.0" fill="rgb(208,208,25)" rx="2" ry="2" />
+<text  x="750.50" y="847.5" ></text>
+</g>
+<g >
+<title>com/wangyin/schedule/sdk/ScheduleSdk.execute (2 samples, 2.78%)</title><rect x="829.4" y="757" width="32.8" height="15.0" fill="rgb(235,48,36)" rx="2" ry="2" />
+<text  x="832.44" y="767.5" >co..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeUserEventTriggered (1 samples, 1.39%)</title><rect x="731.1" y="677" width="16.4" height="15.0" fill="rgb(253,58,10)" rx="2" ry="2" />
+<text  x="734.11" y="687.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.transferAfterCancelledWait (1 samples, 1.39%)</title><rect x="272.2" y="805" width="16.4" height="15.0" fill="rgb(233,206,9)" rx="2" ry="2" />
+<text  x="275.22" y="815.5" ></text>
+</g>
+<g >
+<title>os::sleep(Thread*, long, bool) (4 samples, 5.56%)</title><rect x="75.6" y="821" width="65.5" height="15.0" fill="rgb(205,4,44)" rx="2" ry="2" />
+<text  x="78.56" y="831.5" >os::sle..</text>
+</g>
+<g >
+<title>com/jd/jmq/client/consumer/GroupConsumer$QueueConsumer.run (4 samples, 5.56%)</title><rect x="75.6" y="885" width="65.5" height="15.0" fill="rgb(230,69,12)" rx="2" ry="2" />
+<text  x="78.56" y="895.5" >com/jd/..</text>
+</g>
+<g >
+<title>io/netty/util/concurrent/AbstractEventExecutor.safeExecute (1 samples, 1.39%)</title><rect x="731.1" y="821" width="16.4" height="15.0" fill="rgb(237,103,33)" rx="2" ry="2" />
+<text  x="734.11" y="831.5" ></text>
+</g>
+<g >
+<title>org/apache/tomcat/util/compat/JreCompat.jarFileNewInstance (1 samples, 1.39%)</title><rect x="862.2" y="469" width="16.4" height="15.0" fill="rgb(206,62,44)" rx="2" ry="2" />
+<text  x="865.22" y="479.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/SingleThreadEventExecutor$5.run (7 samples, 9.72%)</title><rect x="583.6" y="885" width="114.7" height="15.0" fill="rgb(211,208,16)" rx="2" ry="2" />
+<text  x="586.61" y="895.5" >io/netty/util/..</text>
+</g>
+<g >
+<title>io/netty/util/concurrent/AbstractEventExecutor.runTask (1 samples, 1.39%)</title><rect x="731.1" y="805" width="16.4" height="15.0" fill="rgb(210,164,2)" rx="2" ry="2" />
+<text  x="734.11" y="815.5" ></text>
+</g>
+<g >
+<title>sun/net/www/protocol/http/HttpURLConnection.filterHeaderField (1 samples, 1.39%)</title><rect x="829.4" y="629" width="16.4" height="15.0" fill="rgb(206,115,40)" rx="2" ry="2" />
+<text  x="832.44" y="639.5" ></text>
+</g>
+<g >
+<title>com/mchange/v2/resourcepool/BasicResourcePool.access$700 (1 samples, 1.39%)</title><rect x="59.2" y="869" width="16.4" height="15.0" fill="rgb(239,46,30)" rx="2" ry="2" />
+<text  x="62.17" y="879.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/utils/StringUtil.isEmpty (1 samples, 1.39%)</title><rect x="960.6" y="581" width="16.3" height="15.0" fill="rgb(236,161,6)" rx="2" ry="2" />
+<text  x="963.56" y="591.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ConcurrentHashMap.writeObject (7 samples, 9.72%)</title><rect x="141.1" y="629" width="114.7" height="15.0" fill="rgb(254,67,24)" rx="2" ry="2" />
+<text  x="144.11" y="639.5" >java/util/conc..</text>
+</g>
+<g >
+<title>org/slf4j/MDC.remove (1 samples, 1.39%)</title><rect x="780.3" y="533" width="16.4" height="15.0" fill="rgb(210,86,31)" rx="2" ry="2" />
+<text  x="783.28" y="543.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/v1/codec/AbstractV1PacketCodec.decodeForLocal (1 samples, 1.39%)</title><rect x="1026.1" y="789" width="16.4" height="15.0" fill="rgb(230,8,25)" rx="2" ry="2" />
+<text  x="1029.11" y="799.5" ></text>
+</g>
+<g >
+<title>java/util/HashMap.writeObject (1 samples, 1.39%)</title><rect x="223.1" y="421" width="16.3" height="15.0" fill="rgb(254,117,40)" rx="2" ry="2" />
+<text  x="226.06" y="431.5" ></text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.&lt;init&gt; (4 samples, 5.56%)</title><rect x="878.6" y="373" width="65.6" height="15.0" fill="rgb(210,75,16)" rx="2" ry="2" />
+<text  x="881.61" y="383.5" >java/ut..</text>
+</g>
+<g >
+<title>java/lang/StringBuilder.toString (1 samples, 1.39%)</title><rect x="796.7" y="725" width="16.4" height="15.0" fill="rgb(209,219,46)" rx="2" ry="2" />
+<text  x="799.67" y="735.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer$ConditionObject.await (1 samples, 1.39%)</title><rect x="993.3" y="805" width="16.4" height="15.0" fill="rgb(233,116,42)" rx="2" ry="2" />
+<text  x="996.33" y="815.5" ></text>
+</g>
+<g >
+<title>clock_gettime (1 samples, 1.39%)</title><rect x="534.4" y="821" width="16.4" height="15.0" fill="rgb(252,122,48)" rx="2" ry="2" />
+<text  x="537.44" y="831.5" ></text>
+</g>
+<g >
+<title>java/util/Formatter.format (1 samples, 1.39%)</title><rect x="944.2" y="629" width="16.4" height="15.0" fill="rgb(250,190,14)" rx="2" ry="2" />
+<text  x="947.17" y="639.5" ></text>
+</g>
+<g >
+<title>__malloc (1 samples, 1.39%)</title><rect x="42.8" y="901" width="16.4" height="15.0" fill="rgb(212,3,48)" rx="2" ry="2" />
+<text  x="45.78" y="911.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject (7 samples, 9.72%)</title><rect x="141.1" y="613" width="114.7" height="15.0" fill="rgb(221,167,53)" rx="2" ry="2" />
+<text  x="144.11" y="623.5" >java/io/Object..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (7 samples, 9.72%)</title><rect x="141.1" y="741" width="114.7" height="15.0" fill="rgb(248,112,18)" rx="2" ry="2" />
+<text  x="144.11" y="751.5" >java/io/Object..</text>
+</g>
+<g >
+<title>ConcurrentG1RefineThread::run_young_rs_sampling() (2 samples, 2.78%)</title><rect x="1058.9" y="853" width="32.8" height="15.0" fill="rgb(211,168,52)" rx="2" ry="2" />
+<text  x="1061.89" y="863.5" >Co..</text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/ext/delay/ReportPacketFileQueueCodec.decode (1 samples, 1.39%)</title><rect x="1026.1" y="805" width="16.4" height="15.0" fill="rgb(251,92,6)" rx="2" ry="2" />
+<text  x="1029.11" y="815.5" ></text>
+</g>
+<g >
+<title>Thread::is_interrupted(Thread*, bool) (1 samples, 1.39%)</title><rect x="518.1" y="837" width="16.3" height="15.0" fill="rgb(252,124,9)" rx="2" ry="2" />
+<text  x="521.06" y="847.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject0 (3 samples, 4.17%)</title><rect x="173.9" y="325" width="49.2" height="15.0" fill="rgb(246,85,48)" rx="2" ry="2" />
+<text  x="176.89" y="335.5" >java..</text>
+</g>
+<g >
+<title>sun/reflect/DelegatingConstructorAccessorImpl.newInstance (1 samples, 1.39%)</title><rect x="59.2" y="693" width="16.4" height="15.0" fill="rgb(252,157,2)" rx="2" ry="2" />
+<text  x="62.17" y="703.5" ></text>
+</g>
+<g >
+<title>sun/net/www/protocol/http/HttpURLConnection.getInputStream (1 samples, 1.39%)</title><rect x="845.8" y="645" width="16.4" height="15.0" fill="rgb(239,106,12)" rx="2" ry="2" />
+<text  x="848.83" y="655.5" ></text>
+</g>
+<g >
+<title>ZIP_Put_In_Cache0 (1 samples, 1.39%)</title><rect x="862.2" y="357" width="16.4" height="15.0" fill="rgb(238,132,52)" rx="2" ry="2" />
+<text  x="865.22" y="367.5" ></text>
+</g>
+<g >
+<title>LinearScan::append_scope_value(int, Instruction*, GrowableArray&lt;ScopeValue*&gt;*) (1 samples, 1.39%)</title><rect x="1091.7" y="645" width="16.4" height="15.0" fill="rgb(252,214,26)" rx="2" ry="2" />
+<text  x="1094.67" y="655.5" ></text>
+</g>
+<g >
+<title>Java_java_io_FileOutputStream_writeBytes (1 samples, 1.39%)</title><rect x="190.3" y="101" width="16.4" height="15.0" fill="rgb(237,90,19)" rx="2" ry="2" />
+<text  x="193.28" y="111.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/DefaultHttpClient.setDefaultHttpParams (1 samples, 1.39%)</title><rect x="944.2" y="677" width="16.4" height="15.0" fill="rgb(228,21,9)" rx="2" ry="2" />
+<text  x="947.17" y="687.5" ></text>
+</g>
+<g >
+<title>org/quartz/simpl/SimpleThreadPool$WorkerThread.run (1 samples, 1.39%)</title><rect x="1042.5" y="901" width="16.4" height="15.0" fill="rgb(223,207,51)" rx="2" ry="2" />
+<text  x="1045.50" y="911.5" ></text>
+</g>
+<g >
+<title>java/lang/String.regionMatches (1 samples, 1.39%)</title><rect x="829.4" y="597" width="16.4" height="15.0" fill="rgb(242,43,42)" rx="2" ry="2" />
+<text  x="832.44" y="607.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/ReentrantLock.lock (1 samples, 1.39%)</title><rect x="976.9" y="773" width="16.4" height="15.0" fill="rgb(231,210,51)" rx="2" ry="2" />
+<text  x="979.94" y="783.5" ></text>
+</g>
+<g >
+<title>javax/xml/bind/JAXBContext.newInstance (4 samples, 5.56%)</title><rect x="878.6" y="677" width="65.6" height="15.0" fill="rgb(239,180,35)" rx="2" ry="2" />
+<text  x="881.61" y="687.5" >javax/x..</text>
+</g>
+<g >
+<title>java/util/HashMap$KeySet.iterator (1 samples, 1.39%)</title><rect x="714.7" y="709" width="16.4" height="15.0" fill="rgb(217,112,33)" rx="2" ry="2" />
+<text  x="717.72" y="719.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (7 samples, 9.72%)</title><rect x="141.1" y="725" width="114.7" height="15.0" fill="rgb(241,40,38)" rx="2" ry="2" />
+<text  x="144.11" y="735.5" >java/io/Object..</text>
+</g>
+<g >
+<title>com/jd/ump/profiler/util/DateFormatUtil.formatTime (1 samples, 1.39%)</title><rect x="370.6" y="853" width="16.3" height="15.0" fill="rgb(238,100,2)" rx="2" ry="2" />
+<text  x="373.56" y="863.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (3 samples, 4.17%)</title><rect x="173.9" y="293" width="49.2" height="15.0" fill="rgb(229,64,26)" rx="2" ry="2" />
+<text  x="176.89" y="303.5" >java..</text>
+</g>
+<g >
+<title>Java_java_io_FileOutputStream_writeBytes (1 samples, 1.39%)</title><rect x="206.7" y="69" width="16.4" height="15.0" fill="rgb(214,56,17)" rx="2" ry="2" />
+<text  x="209.67" y="79.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ThreadPoolExecutor$Worker.run (16 samples, 22.22%)</title><rect x="747.5" y="885" width="262.2" height="15.0" fill="rgb(206,200,13)" rx="2" ry="2" />
+<text  x="750.50" y="895.5" >java/util/concurrent/ThreadPoolExec..</text>
+</g>
+<g >
+<title>java/util/jar/JarFile.&lt;init&gt; (1 samples, 1.39%)</title><rect x="862.2" y="437" width="16.4" height="15.0" fill="rgb(227,164,2)" rx="2" ry="2" />
+<text  x="865.22" y="447.5" ></text>
+</g>
+<g >
+<title>titan/profiler/shade/com/jd/jmtp/v1/codec/ReportPacketCodec.decode (1 samples, 1.39%)</title><rect x="1026.1" y="773" width="16.4" height="15.0" fill="rgb(237,190,4)" rx="2" ry="2" />
+<text  x="1029.11" y="783.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue.offer (1 samples, 1.39%)</title><rect x="976.9" y="789" width="16.4" height="15.0" fill="rgb(246,198,43)" rx="2" ry="2" />
+<text  x="979.94" y="799.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/locks/LockSupport.park (1 samples, 1.39%)</title><rect x="993.3" y="789" width="16.4" height="15.0" fill="rgb(216,224,42)" rx="2" ry="2" />
+<text  x="996.33" y="799.5" ></text>
+</g>
+<g >
+<title>io/netty/util/concurrent/PromiseTask.run (4 samples, 5.56%)</title><rect x="632.8" y="821" width="65.5" height="15.0" fill="rgb(228,219,45)" rx="2" ry="2" />
+<text  x="635.78" y="831.5" >io/nett..</text>
+</g>
+<g >
+<title>sun/nio/ch/EPollSelectorImpl.doSelect (2 samples, 2.78%)</title><rect x="583.6" y="789" width="32.8" height="15.0" fill="rgb(244,58,39)" rx="2" ry="2" />
+<text  x="586.61" y="799.5" >su..</text>
+</g>
+<g >
+<title>com/jd/jmq/client/cluster/ClusterManager$1.publish (7 samples, 9.72%)</title><rect x="141.1" y="869" width="114.7" height="15.0" fill="rgb(225,138,0)" rx="2" ry="2" />
+<text  x="144.11" y="879.5" >com/jd/jmq/cli..</text>
+</g>
+<g >
+<title>com/jd/jex/connection/AsyncConnection$EventSubmitter.run (1 samples, 1.39%)</title><rect x="747.5" y="789" width="16.4" height="15.0" fill="rgb(242,117,4)" rx="2" ry="2" />
+<text  x="750.50" y="799.5" ></text>
+</g>
+<g >
+<title>SafepointSynchronize::begin() (3 samples, 4.17%)</title><rect x="1140.8" y="837" width="49.2" height="15.0" fill="rgb(205,218,53)" rx="2" ry="2" />
+<text  x="1143.83" y="847.5" >Safe..</text>
+</g>
+<g >
+<title>Compilation::compile_method() (2 samples, 2.78%)</title><rect x="1091.7" y="773" width="32.7" height="15.0" fill="rgb(230,70,50)" rx="2" ry="2" />
+<text  x="1094.67" y="783.5" >Co..</text>
+</g>
+<g >
+<title>java/util/Formatter.parse (1 samples, 1.39%)</title><rect x="944.2" y="597" width="16.4" height="15.0" fill="rgb(245,133,30)" rx="2" ry="2" />
+<text  x="947.17" y="607.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.defaultWriteFields (3 samples, 4.17%)</title><rect x="173.9" y="341" width="49.2" height="15.0" fill="rgb(218,18,0)" rx="2" ry="2" />
+<text  x="176.89" y="351.5" >java..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.createSpan (1 samples, 1.39%)</title><rect x="763.9" y="597" width="16.4" height="15.0" fill="rgb(227,5,25)" rx="2" ry="2" />
+<text  x="766.89" y="607.5" ></text>
+</g>
+<g >
+<title>org/apache/http/util/VersionInfo.loadVersionInfo (1 samples, 1.39%)</title><rect x="862.2" y="661" width="16.4" height="15.0" fill="rgb(224,144,42)" rx="2" ry="2" />
+<text  x="865.22" y="671.5" ></text>
+</g>
+<g >
+<title>writeBytes (1 samples, 1.39%)</title><rect x="206.7" y="53" width="16.4" height="15.0" fill="rgb(208,152,32)" rx="2" ry="2" />
+<text  x="209.67" y="63.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.flush (4 samples, 5.56%)</title><rect x="632.8" y="757" width="65.5" height="15.0" fill="rgb(219,39,39)" rx="2" ry="2" />
+<text  x="635.78" y="767.5" >io/nett..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (1 samples, 1.39%)</title><rect x="206.7" y="165" width="16.4" height="15.0" fill="rgb(227,16,17)" rx="2" ry="2" />
+<text  x="209.67" y="175.5" ></text>
+</g>
+<g >
+<title>java/lang/reflect/Method.invoke (4 samples, 5.56%)</title><rect x="173.9" y="469" width="65.5" height="15.0" fill="rgb(242,190,20)" rx="2" ry="2" />
+<text  x="176.89" y="479.5" >java/la..</text>
+</g>
+<g >
+<title>java/lang/Throwable.&lt;init&gt; (1 samples, 1.39%)</title><rect x="747.5" y="709" width="16.4" height="15.0" fill="rgb(247,213,28)" rx="2" ry="2" />
+<text  x="750.50" y="719.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/AbstractSingleArchiveResourceSet.getArchiveEntry (1 samples, 1.39%)</title><rect x="862.2" y="517" width="16.4" height="15.0" fill="rgb(234,74,16)" rx="2" ry="2" />
+<text  x="865.22" y="527.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/Executors$RunnableAdapter.call (1 samples, 1.39%)</title><rect x="747.5" y="805" width="16.4" height="15.0" fill="rgb(243,198,42)" rx="2" ry="2" />
+<text  x="750.50" y="815.5" ></text>
+</g>
+<g >
+<title>com/jd/traceholder/TraceHolder.get (1 samples, 1.39%)</title><rect x="813.1" y="661" width="16.3" height="15.0" fill="rgb(224,73,42)" rx="2" ry="2" />
+<text  x="816.06" y="671.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject (2 samples, 2.78%)</title><rect x="190.3" y="197" width="32.8" height="15.0" fill="rgb(229,38,25)" rx="2" ry="2" />
+<text  x="193.28" y="207.5" >ja..</text>
+</g>
+<g >
+<title>io/netty/channel/nio/NioEventLoop.run (3 samples, 4.17%)</title><rect x="698.3" y="853" width="49.2" height="15.0" fill="rgb(229,133,46)" rx="2" ry="2" />
+<text  x="701.33" y="863.5" >io/n..</text>
+</g>
+<g >
+<title>Java_java_lang_Throwable_fillInStackTrace (1 samples, 1.39%)</title><rect x="747.5" y="661" width="16.4" height="15.0" fill="rgb(210,168,15)" rx="2" ry="2" />
+<text  x="750.50" y="671.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.write (2 samples, 2.78%)</title><rect x="141.1" y="469" width="32.8" height="15.0" fill="rgb(250,57,13)" rx="2" ry="2" />
+<text  x="144.11" y="479.5" >ja..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.access$1500 (1 samples, 1.39%)</title><rect x="616.4" y="789" width="16.4" height="15.0" fill="rgb(224,167,28)" rx="2" ry="2" />
+<text  x="619.39" y="799.5" ></text>
+</g>
+<g >
+<title>com/jd/bdp/hbase/util/HttpClientUtil.get (6 samples, 8.33%)</title><rect x="878.6" y="741" width="98.3" height="15.0" fill="rgb(205,217,2)" rx="2" ry="2" />
+<text  x="881.61" y="751.5" >com/jd/bdp/..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext.invokeUserEventTriggered (1 samples, 1.39%)</title><rect x="731.1" y="693" width="16.4" height="15.0" fill="rgb(231,175,15)" rx="2" ry="2" />
+<text  x="734.11" y="703.5" ></text>
+</g>
+<g >
+<title>VMThread::loop() (3 samples, 4.17%)</title><rect x="1140.8" y="853" width="49.2" height="15.0" fill="rgb(210,110,4)" rx="2" ry="2" />
+<text  x="1143.83" y="863.5" >VMTh..</text>
+</g>
+<g >
+<title>__pthread_cond_timedwait (5 samples, 6.94%)</title><rect x="419.7" y="805" width="82.0" height="15.0" fill="rgb(222,56,36)" rx="2" ry="2" />
+<text  x="422.72" y="815.5" >__pthread..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject (1 samples, 1.39%)</title><rect x="223.1" y="389" width="16.3" height="15.0" fill="rgb(214,55,6)" rx="2" ry="2" />
+<text  x="226.06" y="399.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.setBlockDataMode (1 samples, 1.39%)</title><rect x="223.1" y="325" width="16.3" height="15.0" fill="rgb(238,206,11)" rx="2" ry="2" />
+<text  x="226.06" y="335.5" ></text>
+</g>
+<g >
+<title>org/apache/http/util/VersionInfo.getUserAgent (1 samples, 1.39%)</title><rect x="862.2" y="677" width="16.4" height="15.0" fill="rgb(238,121,21)" rx="2" ry="2" />
+<text  x="865.22" y="687.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/TracingSpanContext.tag (1 samples, 1.39%)</title><rect x="960.6" y="613" width="16.3" height="15.0" fill="rgb(223,76,16)" rx="2" ry="2" />
+<text  x="963.56" y="623.5" ></text>
+</g>
+<g >
+<title>sun/misc/Unsafe.park (1 samples, 1.39%)</title><rect x="993.3" y="773" width="16.4" height="15.0" fill="rgb(209,33,43)" rx="2" ry="2" />
+<text  x="996.33" y="783.5" ></text>
+</g>
+<g >
+<title>com/mchange/v2/resourcepool/BasicResourcePool$ScatteredAcquireTask.run (1 samples, 1.39%)</title><rect x="59.2" y="885" width="16.4" height="15.0" fill="rgb(226,121,2)" rx="2" ry="2" />
+<text  x="62.17" y="895.5" ></text>
+</g>
+<g >
+<title>com/jd/framework/magicbox/tomcat/classloader/MagicBoxParallelWebappClassLoader.getResourceInternal (4 samples, 5.56%)</title><rect x="878.6" y="613" width="65.6" height="15.0" fill="rgb(253,5,19)" rx="2" ry="2" />
+<text  x="881.61" y="623.5" >com/jd/..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/plugin/interceptor/AbstractInterceptingContextImpl.createSpan (1 samples, 1.39%)</title><rect x="763.9" y="629" width="16.4" height="15.0" fill="rgb(236,225,13)" rx="2" ry="2" />
+<text  x="766.89" y="639.5" ></text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.&lt;init&gt; (1 samples, 1.39%)</title><rect x="862.2" y="405" width="16.4" height="15.0" fill="rgb(207,219,29)" rx="2" ry="2" />
+<text  x="865.22" y="415.5" ></text>
+</g>
+<g >
+<title>com/jd/framework/magicbox/tomcat/classloader/MagicBoxParallelWebappClassLoader.getResource (4 samples, 5.56%)</title><rect x="878.6" y="629" width="65.6" height="15.0" fill="rgb(244,152,4)" rx="2" ry="2" />
+<text  x="881.61" y="639.5" >com/jd/..</text>
+</g>
+<g >
+<title>java/io/FileOutputStream.writeBytes (2 samples, 2.78%)</title><rect x="141.1" y="437" width="32.8" height="15.0" fill="rgb(232,174,37)" rx="2" ry="2" />
+<text  x="144.11" y="447.5" >ja..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (1 samples, 1.39%)</title><rect x="223.1" y="357" width="16.3" height="15.0" fill="rgb(235,201,6)" rx="2" ry="2" />
+<text  x="226.06" y="367.5" ></text>
+</g>
+<g >
+<title>JavaThread::run() (3 samples, 4.17%)</title><rect x="1091.7" y="869" width="49.1" height="15.0" fill="rgb(225,145,47)" rx="2" ry="2" />
+<text  x="1094.67" y="879.5" >Java..</text>
+</g>
+<g >
+<title>sun/reflect/GeneratedMethodAccessor13.invoke (1 samples, 1.39%)</title><rect x="223.1" y="437" width="16.3" height="15.0" fill="rgb(211,23,19)" rx="2" ry="2" />
+<text  x="226.06" y="447.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeSerialData (7 samples, 9.72%)</title><rect x="141.1" y="709" width="114.7" height="15.0" fill="rgb(238,205,52)" rx="2" ry="2" />
+<text  x="144.11" y="719.5" >java/io/Object..</text>
+</g>
+<g >
+<title>io/netty/util/concurrent/PromiseTask.runTask (1 samples, 1.39%)</title><rect x="731.1" y="773" width="16.4" height="15.0" fill="rgb(240,199,15)" rx="2" ry="2" />
+<text  x="734.11" y="783.5" ></text>
+</g>
+<g >
+<title>NMethodSweeper::sweep_code_cache() (1 samples, 1.39%)</title><rect x="1124.4" y="789" width="16.4" height="15.0" fill="rgb(209,58,29)" rx="2" ry="2" />
+<text  x="1127.44" y="799.5" ></text>
+</g>
+<g >
+<title>_ZN21ThreadStateTransition20transition_and_fenceEP10JavaThread15JavaThreadStateS2_.constprop.167 (1 samples, 1.39%)</title><rect x="550.8" y="837" width="16.4" height="15.0" fill="rgb(224,109,20)" rx="2" ry="2" />
+<text  x="553.83" y="847.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.setBlockDataMode (1 samples, 1.39%)</title><rect x="190.3" y="165" width="16.4" height="15.0" fill="rgb(219,144,32)" rx="2" ry="2" />
+<text  x="193.28" y="175.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/nio/SelectedSelectionKeySetSelector.select (2 samples, 2.78%)</title><rect x="583.6" y="837" width="32.8" height="15.0" fill="rgb(208,56,3)" rx="2" ry="2" />
+<text  x="586.61" y="847.5" >io..</text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeObject (7 samples, 9.72%)</title><rect x="141.1" y="757" width="114.7" height="15.0" fill="rgb(246,72,24)" rx="2" ry="2" />
+<text  x="144.11" y="767.5" >java/io/Object..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.acquireInterruptibly (1 samples, 1.39%)</title><rect x="354.2" y="821" width="16.4" height="15.0" fill="rgb(207,87,11)" rx="2" ry="2" />
+<text  x="357.17" y="831.5" ></text>
+</g>
+<g >
+<title>com/jd/pfinder/plugin/slf4j/mdc/Slf4jMdcTracingPhaseListener.onTracingPhaseBegin (1 samples, 1.39%)</title><rect x="763.9" y="533" width="16.4" height="15.0" fill="rgb(232,61,30)" rx="2" ry="2" />
+<text  x="766.89" y="543.5" ></text>
+</g>
+<g >
+<title>sun/reflect/GeneratedMethodAccessor12.invoke (3 samples, 4.17%)</title><rect x="173.9" y="229" width="49.2" height="15.0" fill="rgb(214,137,8)" rx="2" ry="2" />
+<text  x="176.89" y="239.5" >sun/..</text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext$WriteAndFlushTask.write (1 samples, 1.39%)</title><rect x="616.4" y="805" width="16.4" height="15.0" fill="rgb(234,167,46)" rx="2" ry="2" />
+<text  x="619.39" y="815.5" ></text>
+</g>
+<g >
+<title>com/jd/jsf/gd/client/ConnectionHolder.sendHeartbeatToProvider (4 samples, 5.56%)</title><rect x="763.9" y="741" width="65.5" height="15.0" fill="rgb(231,208,6)" rx="2" ry="2" />
+<text  x="766.89" y="751.5" >com/jd/..</text>
+</g>
+<g >
+<title>com/jd/jmq/common/network/netty/NettyDecoder.decode (1 samples, 1.39%)</title><rect x="698.3" y="597" width="16.4" height="15.0" fill="rgb(253,112,31)" rx="2" ry="2" />
+<text  x="701.33" y="607.5" ></text>
+</g>
+<g >
+<title>JVM_Sleep (7 samples, 9.72%)</title><rect x="403.3" y="837" width="114.8" height="15.0" fill="rgb(244,67,31)" rx="2" ry="2" />
+<text  x="406.33" y="847.5" >JVM_Sleep</text>
+</g>
+<g >
+<title>io/netty/util/concurrent/AbstractEventExecutor.safeExecute (5 samples, 6.94%)</title><rect x="616.4" y="837" width="81.9" height="15.0" fill="rgb(236,68,22)" rx="2" ry="2" />
+<text  x="619.39" y="847.5" >io/netty/..</text>
+</g>
+<g >
+<title>com/jd/jsf/gd/transport/JSFClientTransport.doSend (2 samples, 2.78%)</title><rect x="763.9" y="677" width="32.8" height="15.0" fill="rgb(251,199,10)" rx="2" ry="2" />
+<text  x="766.89" y="687.5" >co..</text>
+</g>
+<g >
+<title>java/util/zip/ZipFile.open (1 samples, 1.39%)</title><rect x="862.2" y="389" width="16.4" height="15.0" fill="rgb(207,16,37)" rx="2" ry="2" />
+<text  x="865.22" y="399.5" ></text>
+</g>
+<g >
+<title>java/util/concurrent/LinkedBlockingDeque.pollFirst (6 samples, 8.33%)</title><rect x="272.2" y="853" width="98.4" height="15.0" fill="rgb(216,99,6)" rx="2" ry="2" />
+<text  x="275.22" y="863.5" >java/util/c..</text>
+</g>
+<g >
+<title>sun/nio/ch/EPollArrayWrapper.poll (2 samples, 2.78%)</title><rect x="583.6" y="773" width="32.8" height="15.0" fill="rgb(236,215,35)" rx="2" ry="2" />
+<text  x="586.61" y="783.5" >su..</text>
+</g>
+<g >
+<title>java/util/HashMap.entrySet (1 samples, 1.39%)</title><rect x="780.3" y="421" width="16.4" height="15.0" fill="rgb(239,74,36)" rx="2" ry="2" />
+<text  x="783.28" y="431.5" ></text>
+</g>
+<g >
+<title>java/util/StringTokenizer.nextToken (1 samples, 1.39%)</title><rect x="698.3" y="549" width="16.4" height="15.0" fill="rgb(222,169,24)" rx="2" ry="2" />
+<text  x="701.33" y="559.5" ></text>
+</g>
+<g >
+<title>Runtime1::exception_handler_for_pc(JavaThread*) (1 samples, 1.39%)</title><rect x="845.8" y="613" width="16.4" height="15.0" fill="rgb(230,58,26)" rx="2" ry="2" />
+<text  x="848.83" y="623.5" ></text>
+</g>
+<g >
+<title>com/jd/registry/util/EventManager.add (1 samples, 1.39%)</title><rect x="731.1" y="629" width="16.4" height="15.0" fill="rgb(252,222,10)" rx="2" ry="2" />
+<text  x="734.11" y="639.5" ></text>
+</g>
+<g >
+<title>java/lang/Throwable.fillInStackTrace (1 samples, 1.39%)</title><rect x="747.5" y="677" width="16.4" height="15.0" fill="rgb(251,34,2)" rx="2" ry="2" />
+<text  x="750.50" y="687.5" ></text>
+</g>
+<g >
+<title>io/netty/util/HashedWheelTimer$Worker.processCancelledTasks (1 samples, 1.39%)</title><rect x="386.9" y="869" width="16.4" height="15.0" fill="rgb(243,0,12)" rx="2" ry="2" />
+<text  x="389.94" y="879.5" ></text>
+</g>
+<g >
+<title>sun/nio/ch/SelectorImpl.select (2 samples, 2.78%)</title><rect x="583.6" y="821" width="32.8" height="15.0" fill="rgb(205,137,3)" rx="2" ry="2" />
+<text  x="586.61" y="831.5" >su..</text>
+</g>
+<g >
+<title>Compilation::compile_java_method() (2 samples, 2.78%)</title><rect x="1091.7" y="757" width="32.7" height="15.0" fill="rgb(243,91,29)" rx="2" ry="2" />
+<text  x="1094.67" y="767.5" >Co..</text>
+</g>
+<g >
+<title>java/util/concurrent/locks/AbstractQueuedSynchronizer.compareAndSetHead (1 samples, 1.39%)</title><rect x="272.2" y="773" width="16.4" height="15.0" fill="rgb(223,88,6)" rx="2" ry="2" />
+<text  x="275.22" y="783.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream.writeOrdinaryObject (3 samples, 4.17%)</title><rect x="173.9" y="373" width="49.2" height="15.0" fill="rgb(207,157,25)" rx="2" ry="2" />
+<text  x="176.89" y="383.5" >java..</text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getClassLoaderResource (1 samples, 1.39%)</title><rect x="862.2" y="613" width="16.4" height="15.0" fill="rgb(215,221,45)" rx="2" ry="2" />
+<text  x="865.22" y="623.5" ></text>
+</g>
+<g >
+<title>com/wangyin/schedule/httpclient/SimpleHttpClient.execute (2 samples, 2.78%)</title><rect x="829.4" y="693" width="32.8" height="15.0" fill="rgb(212,5,51)" rx="2" ry="2" />
+<text  x="832.44" y="703.5" >co..</text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jMDCAdapter.remove (1 samples, 1.39%)</title><rect x="780.3" y="517" width="16.4" height="15.0" fill="rgb(230,191,22)" rx="2" ry="2" />
+<text  x="783.28" y="527.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/CloseableHttpClient.execute (1 samples, 1.39%)</title><rect x="960.6" y="677" width="16.3" height="15.0" fill="rgb(209,227,17)" rx="2" ry="2" />
+<text  x="963.56" y="687.5" ></text>
+</g>
+<g >
+<title>sun/reflect/GeneratedMethodAccessor262.invoke (7 samples, 9.72%)</title><rect x="141.1" y="645" width="114.7" height="15.0" fill="rgb(233,107,38)" rx="2" ry="2" />
+<text  x="144.11" y="655.5" >sun/reflect/Ge..</text>
+</g>
+<g >
+<title>com/jd/pfinder/profiler/tracer/context/BaseTracingContext.createSpan (1 samples, 1.39%)</title><rect x="763.9" y="581" width="16.4" height="15.0" fill="rgb(213,209,24)" rx="2" ry="2" />
+<text  x="766.89" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/tomcat/util/compat/JreCompat.jarFileNewInstance (4 samples, 5.56%)</title><rect x="878.6" y="421" width="65.6" height="15.0" fill="rgb(205,80,7)" rx="2" ry="2" />
+<text  x="881.61" y="431.5" >org/apa..</text>
+</g>
+<g >
+<title>com/jd/component/donglog/log/LogUtils.putLogMdc (1 samples, 1.39%)</title><rect x="813.1" y="693" width="16.3" height="15.0" fill="rgb(228,85,36)" rx="2" ry="2" />
+<text  x="816.06" y="703.5" ></text>
+</g>
+<g >
+<title>com/mysql/jdbc/ConnectionImpl.&lt;init&gt; (1 samples, 1.39%)</title><rect x="59.2" y="645" width="16.4" height="15.0" fill="rgb(223,60,45)" rx="2" ry="2" />
+<text  x="62.17" y="655.5" ></text>
+</g>
+<g >
+<title>javax/xml/bind/JAXBContext.newInstance (4 samples, 5.56%)</title><rect x="878.6" y="693" width="65.6" height="15.0" fill="rgb(239,50,14)" rx="2" ry="2" />
+<text  x="881.61" y="703.5" >javax/x..</text>
+</g>
+<g >
+<title>org/apache/logging/slf4j/Log4jLogger.debug (1 samples, 1.39%)</title><rect x="813.1" y="725" width="16.3" height="15.0" fill="rgb(228,176,9)" rx="2" ry="2" />
+<text  x="816.06" y="735.5" ></text>
+</g>
+<g >
+<title>org/apache/http/impl/client/AbstractHttpClient.doExecute (1 samples, 1.39%)</title><rect x="960.6" y="661" width="16.3" height="15.0" fill="rgb(234,151,26)" rx="2" ry="2" />
+<text  x="963.56" y="671.5" ></text>
+</g>
+<g >
+<title>io/netty/channel/AbstractChannelHandlerContext$AbstractWriteTask.run (1 samples, 1.39%)</title><rect x="616.4" y="821" width="16.4" height="15.0" fill="rgb(242,225,11)" rx="2" ry="2" />
+<text  x="619.39" y="831.5" ></text>
+</g>
+<g >
+<title>Deoptimization::deoptimize_frame(JavaThread*, long*) (1 samples, 1.39%)</title><rect x="845.8" y="581" width="16.4" height="15.0" fill="rgb(211,106,40)" rx="2" ry="2" />
+<text  x="848.83" y="591.5" ></text>
+</g>
+<g >
+<title>org/apache/catalina/webresources/StandardRoot.getResource (1 samples, 1.39%)</title><rect x="862.2" y="597" width="16.4" height="15.0" fill="rgb(241,166,13)" rx="2" ry="2" />
+<text  x="865.22" y="607.5" ></text>
+</g>
+<g >
+<title>java/io/ObjectOutputStream$BlockDataOutputStream.write (1 samples, 1.39%)</title><rect x="173.9" y="165" width="16.4" height="15.0" fill="rgb(210,196,46)" rx="2" ry="2" />
+<text  x="176.89" y="175.5" ></text>
+</g>
+</g>
+</svg>
